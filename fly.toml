@@ -1,0 +1,31 @@
+# fly.toml app configuration file generated for alphatrader on 2026-05-14T22:20:49+05:30
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'alphatrader'
+primary_region = 'sin'
+
+[build]
+
+[env]
+  DATA_DIR = '/data/cache'
+  MODELS_DIR = '/app/models/saved'
+  PAPER_TRADE = 'true'
+
+[[mounts]]
+  source = 'alphatrader_data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 8501
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024

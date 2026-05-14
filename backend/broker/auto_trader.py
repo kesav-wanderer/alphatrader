@@ -6,6 +6,7 @@ Auto paper trader:
 import sys
 sys.path.insert(0, ".")
 
+import os
 import time
 from datetime import datetime, timedelta
 from backend.data.fetcher import fetch_ohlcv, get_live_price, _is_market_hours
@@ -17,14 +18,15 @@ from config import WATCHLIST, RISK_PER_TRADE_PCT
 
 CAPITAL_PER_TRADE = 25000   # ₹ per trade
 MAX_OPEN_POSITIONS = 4      # never hold more than 4 stocks at once
-LOG_FILE = "./data/cache/auto_trader.log"
+LOG_FILE = os.path.join(os.getenv("DATA_DIR", "./data/cache"), "auto_trader.log")
 
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line)
-    with open(LOG_FILE, "a") as f:
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 
@@ -74,8 +76,8 @@ def morning_scan():
             stop_loss=decision.stop_loss, target=decision.target
         )
         if trade["status"] == "EXECUTED":
-            log(f"  BUY  {sym:<18} qty={qty}  price=₹{price:.2f}  "
-                f"sl=₹{decision.stop_loss}  target=₹{decision.target}  score={score}")
+            log(f"  BUY  {sym:<18} qty={qty}  price=Rs{price:.2f}  "
+                f"sl=Rs{decision.stop_loss}  target=Rs{decision.target}  score={score}")
             placed += 1
         else:
             log(f"  REJECTED {sym}: {trade.get('reason')}")
@@ -114,14 +116,14 @@ def monitor_positions():
             if reason:
                 trade = place_order(sym, "SELL", qty, price)
                 if trade["status"] == "EXECUTED":
-                    log(f"  SELL {sym:<18} qty={qty}  price=₹{price:.2f}  "
+                    log(f"  SELL {sym:<18} qty={qty}  price=Rs{price:.2f}  "
                         f"pnl={pnl_pct:+.1f}%  reason={reason}")
                 else:
                     log(f"  SELL FAILED {sym}: {trade.get('reason')}")
             else:
-                log(f"  HOLD {sym:<18} price=₹{price:.2f}  "
-                    f"avg=₹{avg:.2f}  pnl={pnl_pct:+.1f}%  "
-                    f"sl=₹{sl}  target=₹{target}")
+                log(f"  HOLD {sym:<18} price=Rs{price:.2f}  "
+                    f"avg=Rs{avg:.2f}  pnl={pnl_pct:+.1f}%  "
+                    f"sl=Rs{sl}  target=Rs{target}")
 
         except Exception as e:
             log(f"  monitor error {sym}: {e}")
