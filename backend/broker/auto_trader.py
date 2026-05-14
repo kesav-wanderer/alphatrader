@@ -1,0 +1,167 @@
+"""
+Auto paper trader:
+- Morning scan: finds BUY signals, places paper orders automatically
+- Position monitor: checks open positions every 5 min, exits on SL/target
+"""
+import sys
+sys.path.insert(0, ".")
+
+import time
+from datetime import datetime, timedelta
+from backend.data.fetcher import fetch_ohlcv, get_live_price, _is_market_hours
+from backend.data.indicators import add_indicators, get_indicator_snapshot
+from backend.strategies.signal_engine import evaluate_signals
+from backend.broker.paper_broker import get_portfolio, place_order, get_pnl
+from config import WATCHLIST, RISK_PER_TRADE_PCT
+
+
+CAPITAL_PER_TRADE = 25000   # ₹ per trade
+MAX_OPEN_POSITIONS = 4      # never hold more than 4 stocks at once
+LOG_FILE = "./data/cache/auto_trader.log"
+
+
+def log(msg: str):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line)
+    with open(LOG_FILE, "a") as f:
+        f.write(line + "\n")
+
+
+def morning_scan():
+    """Run at market open — scan watchlist, place BUY orders for top signals."""
+    log("=== Morning Scan Started ===")
+    portfolio  = get_portfolio()
+    open_pos   = len(portfolio.get("positions", {}))
+
+    if open_pos >= MAX_OPEN_POSITIONS:
+        log(f"Max positions ({MAX_OPEN_POSITIONS}) already open. Skipping scan.")
+        return
+
+    slots = MAX_OPEN_POSITIONS - open_pos
+    candidates = []
+
+    for sym in WATCHLIST:
+        # Skip if already holding
+        if sym in portfolio.get("positions", {}):
+            continue
+        try:
+            df_raw   = fetch_ohlcv(sym, period="1y", use_cache=True)
+            df_ind   = add_indicators(df_raw)
+            snap     = get_indicator_snapshot(df_ind)
+            decision = evaluate_signals(sym, snap, df_raw=df_raw)
+            if decision.action == "BUY":
+                candidates.append((decision.score, decision.confidence, sym, decision, snap))
+        except Exception as e:
+            log(f"  scan error {sym}: {e}")
+
+    # Sort by score + confidence, take top N
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    placed = 0
+
+    for score, conf, sym, decision, snap in candidates[:slots]:
+        live = get_live_price(sym)
+        price = live.get("price") or snap.get("close", 0)
+        if not price:
+            continue
+
+        qty = int(CAPITAL_PER_TRADE / price)
+        if qty == 0:
+            continue
+
+        trade = place_order(
+            symbol=sym, action="BUY", qty=qty, price=price,
+            stop_loss=decision.stop_loss, target=decision.target
+        )
+        if trade["status"] == "EXECUTED":
+            log(f"  BUY  {sym:<18} qty={qty}  price=₹{price:.2f}  "
+                f"sl=₹{decision.stop_loss}  target=₹{decision.target}  score={score}")
+            placed += 1
+        else:
+            log(f"  REJECTED {sym}: {trade.get('reason')}")
+
+    log(f"=== Morning Scan Done — {placed} orders placed ===")
+
+
+def monitor_positions():
+    """Check all open positions against live prices. Exit on SL/target."""
+    portfolio = get_portfolio()
+    positions = portfolio.get("positions", {})
+    if not positions:
+        return
+
+    for sym, pos in list(positions.items()):
+        try:
+            live  = get_live_price(sym)
+            price = live.get("price")
+            if not price:
+                continue
+
+            sl     = pos.get("stop_loss")
+            target = pos.get("target")
+            qty    = pos["qty"]
+            avg    = pos["avg_price"]
+            pnl_pct = ((price - avg) / avg) * 100
+
+            reason = None
+            if sl and price <= sl:
+                reason = f"STOPLOSS hit ₹{price:.2f} <= sl=₹{sl}"
+            elif target and price >= target:
+                reason = f"TARGET hit ₹{price:.2f} >= target=₹{target}"
+            elif pnl_pct <= -3.0:
+                reason = f"Emergency exit pnl={pnl_pct:.1f}%"
+
+            if reason:
+                trade = place_order(sym, "SELL", qty, price)
+                if trade["status"] == "EXECUTED":
+                    log(f"  SELL {sym:<18} qty={qty}  price=₹{price:.2f}  "
+                        f"pnl={pnl_pct:+.1f}%  reason={reason}")
+                else:
+                    log(f"  SELL FAILED {sym}: {trade.get('reason')}")
+            else:
+                log(f"  HOLD {sym:<18} price=₹{price:.2f}  "
+                    f"avg=₹{avg:.2f}  pnl={pnl_pct:+.1f}%  "
+                    f"sl=₹{sl}  target=₹{target}")
+
+        except Exception as e:
+            log(f"  monitor error {sym}: {e}")
+
+
+def run_loop(scan_interval_min: int = 5):
+    """
+    Run continuously during market hours.
+    - Does morning scan once at open
+    - Monitors positions every scan_interval_min minutes
+    """
+    log("Auto trader started. Ctrl+C to stop.")
+    morning_done = False
+
+    while True:
+        now = datetime.now()
+
+        if not _is_market_hours():
+            log("Market closed. Waiting...")
+            morning_done = False     # reset for next day
+            time.sleep(300)
+            continue
+
+        # Morning scan — run once between 9:15 and 9:25
+        ist_hour   = (now + timedelta(hours=5, minutes=30)).hour
+        ist_minute = (now + timedelta(hours=5, minutes=30)).minute
+        if ist_hour == 9 and 15 <= ist_minute <= 25 and not morning_done:
+            morning_scan()
+            morning_done = True
+
+        # Position monitor
+        monitor_positions()
+        time.sleep(scan_interval_min * 60)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "scan":
+        morning_scan()
+    elif len(sys.argv) > 1 and sys.argv[1] == "monitor":
+        monitor_positions()
+    else:
+        run_loop()

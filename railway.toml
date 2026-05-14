@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "streamlit run frontend/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
+restartPolicyType = "always"
+
+[environments.production.variables]
+PAPER_TRADE = "true"
+DATA_DIR = "/data/cache"
+MODELS_DIR = "/data/models"

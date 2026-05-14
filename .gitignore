@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/cache/
+# models/saved/   # uncomment to exclude model files from git
+*.parquet
+*.log
+.DS_Store
+notebooks/.ipynb_checkpoints/
