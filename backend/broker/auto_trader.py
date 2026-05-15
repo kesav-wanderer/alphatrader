@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from backend.data.fetcher import fetch_ohlcv, get_live_price, _is_market_hours
 from backend.data.indicators import add_indicators, get_indicator_snapshot
 from backend.strategies.signal_engine import evaluate_signals
-from backend.broker.paper_broker import get_portfolio, place_order, get_pnl
+from backend.broker.paper_broker import get_portfolio, place_order, get_pnl, calc_capital_per_trade
+from backend.broker.decision_log import log_decision, update_outcome
 from config import WATCHLIST, RISK_PER_TRADE_PCT
 
 
@@ -79,6 +80,8 @@ def morning_scan():
         if not price:
             continue
 
+        # Dynamic sizing: recalculate per slot so each trade uses fair share
+        capital_per_trade = calc_capital_per_trade(cfg)
         qty = int(capital_per_trade / price)
         if qty == 0:
             continue
@@ -89,8 +92,17 @@ def morning_scan():
         )
         if trade["status"] == "EXECUTED":
             log(f"  BUY  {sym:<18} qty={qty}  price=Rs{price:.2f}  "
-                f"sl=Rs{decision.stop_loss}  target=Rs{decision.target}  score={score}")
+                f"sl=Rs{decision.stop_loss}  target=Rs{decision.target}  score={score}  capital=Rs{capital_per_trade:.0f}")
             placed += 1
+            try:
+                news_sentiment = None
+                from backend.data.news_fetcher import get_news_sentiment_signal
+                ns = get_news_sentiment_signal(sym)
+                news_sentiment = ns.get("value", 0) * ns.get("confidence", 0)
+                log_decision(sym, "BUY", price, decision.signals, score, conf,
+                             decision.stop_loss, decision.target, news_sentiment)
+            except Exception:
+                pass
         else:
             log(f"  REJECTED {sym}: {trade.get('reason')}")
 
@@ -130,6 +142,10 @@ def monitor_positions():
                 if trade["status"] == "EXECUTED":
                     log(f"  SELL {sym:<18} qty={qty}  price=Rs{price:.2f}  "
                         f"pnl={pnl_pct:+.1f}%  reason={reason}")
+                    try:
+                        update_outcome(sym, price, pnl_pct, reason)
+                    except Exception:
+                        pass
                 else:
                     log(f"  SELL FAILED {sym}: {trade.get('reason')}")
             else:

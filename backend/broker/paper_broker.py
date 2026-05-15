@@ -108,7 +108,12 @@ def get_pnl(current_prices: dict) -> dict:
 
 
 CONFIG_FILE = os.path.join(DATA_DIR, "trader_config.json")
-_DEFAULT_CFG = {"capital_per_trade": 25000, "max_open_positions": 4, "starting_cash": 100000}
+_DEFAULT_CFG = {
+    "capital_per_trade": 25000,
+    "max_open_positions": 4,
+    "starting_cash": 100000,
+    "use_dynamic_sizing": True,   # divides available cash equally across open slots
+}
 
 
 def load_trader_config() -> dict:
@@ -125,6 +130,41 @@ def save_trader_config(cfg: dict):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump({**_DEFAULT_CFG, **cfg}, f, indent=2)
+
+
+def calc_capital_per_trade(cfg: dict = None) -> float:
+    """Return capital to deploy per trade, dynamic or fixed based on config."""
+    if cfg is None:
+        cfg = load_trader_config()
+    if not cfg.get("use_dynamic_sizing", True):
+        return float(cfg.get("capital_per_trade", 25000))
+
+    portfolio = _load()
+    cash = portfolio.get("cash", 0.0)
+    open_pos = len(portfolio.get("positions", {}))
+    max_pos = int(cfg.get("max_open_positions", 4))
+    remaining_slots = max(max_pos - open_pos, 1)
+    return max(cash / remaining_slots, 0.0)
+
+
+def add_funds(amount: float) -> dict:
+    """Add cash to the portfolio without touching positions or trade history."""
+    portfolio = _load()
+    portfolio["cash"] = round(portfolio.get("cash", 0.0) + amount, 2)
+    portfolio.setdefault("trades", []).append({
+        "timestamp": datetime.now().isoformat(),
+        "symbol": "—",
+        "action": "DEPOSIT",
+        "qty": 0,
+        "price": 0,
+        "cost": round(amount, 2),
+        "stop_loss": None,
+        "target": None,
+        "status": "EXECUTED",
+        "reason": f"Manual deposit ₹{amount:,.0f}",
+    })
+    _save(portfolio)
+    return {"cash": portfolio["cash"], "deposited": amount}
 
 
 def reset_portfolio(starting_cash: float = 100000.0):

@@ -530,13 +530,22 @@ elif page == "Backtest":
 elif page == "Auto Trade":
     st.markdown("<h1>Auto Paper Trader</h1>", unsafe_allow_html=True)
 
-    from backend.broker.auto_trader import morning_scan, monitor_positions, CAPITAL_PER_TRADE, MAX_OPEN_POSITIONS, LOG_FILE
+    from backend.broker.auto_trader import morning_scan, monitor_positions, LOG_FILE
+    from backend.broker.paper_broker import load_trader_config as _load_cfg, calc_capital_per_trade as _dyn_cap
+
+    _at_cfg = _load_cfg()
+    _at_max_pos = int(_at_cfg.get("max_open_positions", 4))
+    _at_portfolio = get_portfolio()
+    _at_open = len(_at_portfolio.get("positions", {}))
+    _at_cash = _at_portfolio.get("cash", 0.0)
+    _at_cap = _dyn_cap(_at_cfg)
+    _at_cap_label = "dynamic / slot" if _at_cfg.get("use_dynamic_sizing", True) else "per position"
 
     sched_running = "scheduler" in st.session_state
     st.markdown(f"""
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-        {stat_card("Capital / Trade",    f"₹{CAPITAL_PER_TRADE:,.0f}", "per position", "#3b82f6")}
-        {stat_card("Max Positions",      str(MAX_OPEN_POSITIONS), "open at once", "#8b5cf6")}
+        {stat_card("Capital / Trade",    f"₹{_at_cap:,.0f}", _at_cap_label, "#3b82f6")}
+        {stat_card("Positions",          f"{_at_open}/{_at_max_pos}", f"₹{_at_cash:,.0f} free", "#8b5cf6")}
         {stat_card("Market",             "Open" if _is_market_hours() else "Closed", "IST 9:15–15:30", "#10b981" if _is_market_hours() else "#ef4444")}
         {stat_card("Scheduler",          "Active ✓" if sched_running else "Inactive", "auto-fires 9:16 IST", "#10b981" if sched_running else "#f59e0b")}
     </div>
@@ -567,6 +576,10 @@ elif page == "Auto Trade":
     st.markdown("<h2>Manual Force Buy</h2>", unsafe_allow_html=True)
     st.caption("Bypass scan — buy any stock immediately at live price (or override).")
 
+    _fb_portfolio = get_portfolio()
+    _fb_cash = _fb_portfolio.get("cash", 0.0)
+    _fb_open = len(_fb_portfolio.get("positions", {}))
+
     fb1, fb2, fb3, fb4 = st.columns([3, 1, 1, 2])
     fb_sym  = fb1.selectbox("Stock", WATCHLIST, format_func=lambda x: x.replace(".NS",""), label_visibility="collapsed", key="fb_sym")
     fb_qty  = fb2.number_input("Qty", min_value=1, value=10, step=1, label_visibility="collapsed", key="fb_qty")
@@ -575,22 +588,39 @@ elif page == "Auto Trade":
     _fb_default_price = float(_fb_live.get("price") or 0)
     fb_price = fb3.number_input("Price ₹", min_value=0.05, value=max(_fb_default_price, 0.05), step=0.05, label_visibility="collapsed", key="fb_price")
 
+    _fb_max_qty = int(_fb_cash / fb_price) if fb_price > 0 else 0
+    fb1.caption(f"Cash: ₹{_fb_cash:,.0f}  |  Max qty @ ₹{fb_price:.0f}: **{_fb_max_qty}**")
+
     with fb4:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button(f"⚡ Force BUY {fb_sym.replace('.NS','')}", type="primary", use_container_width=True):
             from backend.strategies.signal_engine import evaluate_signals
             from backend.data.indicators import add_indicators, get_indicator_snapshot
+            from backend.broker.decision_log import log_decision
             try:
                 _df = add_indicators(fetch_ohlcv(fb_sym, period="6mo", use_cache=True))
                 _snap = get_indicator_snapshot(_df)
-                _dec = evaluate_signals(fb_sym, _snap, df_raw=_df)
+                _dec = evaluate_signals(fb_sym, _snap, df_raw=_df, include_news=True)
                 sl, tgt = _dec.stop_loss, _dec.target
             except Exception:
+                _dec = None
                 sl, tgt = round(fb_price * 0.98, 2), round(fb_price * 1.06, 2)
 
             trade = place_order(fb_sym, "BUY", fb_qty, fb_price, stop_loss=sl, target=tgt)
             if trade["status"] == "EXECUTED":
                 st.success(f"✅ Bought {fb_qty} × {fb_sym.replace('.NS','')} @ ₹{fb_price:.2f}  |  SL ₹{sl}  →  Target ₹{tgt}")
+                try:
+                    ns_val = 0.0
+                    from backend.data.news_fetcher import get_news_sentiment_signal
+                    ns = get_news_sentiment_signal(fb_sym)
+                    ns_val = ns.get("value", 0) * ns.get("confidence", 0)
+                    log_decision(fb_sym, "BUY", fb_price,
+                                 _dec.signals if _dec else [],
+                                 _dec.score if _dec else 0,
+                                 _dec.confidence if _dec else 0.0,
+                                 sl, tgt, ns_val)
+                except Exception:
+                    pass
             else:
                 st.error(f"Rejected: {trade.get('reason')}")
             st.rerun()
@@ -683,6 +713,61 @@ elif page == "Portfolio":
         if not current_prices:
             st.caption("* live price unavailable — showing entry price")
 
+        # ── News for held stocks ───────────────────────────────────────────
+        st.divider()
+        st.markdown("<h2>News & AI Outlook</h2>", unsafe_allow_html=True)
+        from backend.data.news_fetcher import get_stock_news, get_news_sentiment_signal
+        from backend.strategies.signal_engine import evaluate_signals
+
+        for sym in syms:
+            short = sym.replace(".NS", "")
+            with st.expander(f"📰 {short}", expanded=False):
+                col_news, col_ai = st.columns([3, 1])
+                with col_news:
+                    articles = get_stock_news(sym, max_articles=5)
+                    if articles:
+                        for art in articles:
+                            sent = art["sentiment"]
+                            dot = "🟢" if sent > 0.1 else ("🔴" if sent < -0.1 else "⚪")
+                            link = art.get("link", "")
+                            title_html = f'<a href="{link}" target="_blank" style="color:#93c5fd;text-decoration:none">{art["title"]}</a>' if link else art["title"]
+                            st.markdown(
+                                f'{dot} {title_html}<br>'
+                                f'<span style="color:#64748b;font-size:11px">{art["publisher"]} · {art["published"][:10]}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            if art.get("summary"):
+                                st.caption(art["summary"])
+                            st.markdown("<br>", unsafe_allow_html=True)
+                    else:
+                        st.caption("No recent news found.")
+                with col_ai:
+                    try:
+                        _pos = positions[sym]
+                        _entry = _pos["avg_price"]
+                        _live_p = current_prices.get(sym, _entry)
+                        _pnl_pct = ((_live_p - _entry) / _entry) * 100 if _entry else 0
+                        _pnl_color = "#10b981" if _pnl_pct >= 0 else "#ef4444"
+                        ns = get_news_sentiment_signal(sym)
+                        sent_label = "Positive" if ns["value"] > 0 else ("Negative" if ns["value"] < 0 else "Neutral")
+                        sent_color = "#10b981" if ns["value"] > 0 else ("#ef4444" if ns["value"] < 0 else "#f59e0b")
+                        _df_ai = add_indicators(fetch_ohlcv(sym, period="6mo", use_cache=True))
+                        _snap_ai = get_indicator_snapshot(_df_ai)
+                        _dec_ai = evaluate_signals(sym, _snap_ai, df_raw=_df_ai, include_news=True)
+                        action_colors = {"BUY": "#10b981", "SELL": "#ef4444", "HOLD": "#f59e0b"}
+                        ac = action_colors.get(_dec_ai.action, "#94a3b8")
+                        st.markdown(f"""
+                        <div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:8px;padding:12px;text-align:center">
+                            <div style="font-size:11px;color:#64748b;margin-bottom:4px">AI Signal</div>
+                            <div style="font-size:22px;font-weight:700;color:{ac}">{_dec_ai.action}</div>
+                            <div style="font-size:11px;color:#64748b;margin:4px 0">Score {_dec_ai.score} · Conf {_dec_ai.confidence:.0%}</div>
+                            <div style="font-size:11px;color:{sent_color};margin-top:6px">News: {sent_label}</div>
+                            <div style="font-size:11px;color:{_pnl_color};margin-top:4px">P&L {_pnl_pct:+.2f}%</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    except Exception:
+                        st.caption("Signal unavailable")
+
     if trades:
         st.divider()
         st.markdown("<h2>Trade History</h2>", unsafe_allow_html=True)
@@ -703,6 +788,43 @@ elif page == "Portfolio":
     else:
         st.caption("No trades yet.")
 
+    # ── AI Decision Log / Training Data ───────────────────────────────────────
+    st.divider()
+    st.markdown("<h2>AI Decision Log</h2>", unsafe_allow_html=True)
+    st.caption("Every AI decision is recorded here with its outcome — used as training data over time.")
+    from backend.broker.decision_log import get_recent_decisions, export_training_csv
+    decisions = get_recent_decisions(limit=50)
+    if decisions:
+        dec_rows = []
+        for d in decisions:
+            out = d.get("outcome") or {}
+            pnl_str = f"{out.get('pnl_pct', 0):+.2f}%" if out else "pending"
+            result = ("✅ Win" if out.get("profitable") else "❌ Loss") if out else "⏳ Open"
+            dec_rows.append({
+                "Time":      d.get("ts","")[:16].replace("T"," "),
+                "Symbol":    str(d.get("symbol","")).replace(".NS",""),
+                "Action":    d.get("action",""),
+                "Price ₹":  f"₹{d.get('price',0):,.2f}",
+                "Score":     d.get("score",""),
+                "Conf":      f"{d.get('confidence',0):.0%}",
+                "P&L":       pnl_str,
+                "Result":    result,
+                "Exit":      out.get("exit_reason","")[:30] if out else "",
+            })
+        st.markdown(_html_table(
+            ["Time","Symbol","Action","Price ₹","Score","Conf","P&L","Result","Exit"],
+            dec_rows, pnl_cols={"P&L"}
+        ), unsafe_allow_html=True)
+        csv_data = export_training_csv()
+        st.download_button(
+            "Download Training Data (CSV)",
+            data=csv_data,
+            file_name="alphatrader_training_data.csv",
+            mime="text/csv",
+        )
+    else:
+        st.caption("No decisions logged yet — decisions are recorded when Auto Trade buys or you use Force Buy.")
+
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 elif page == "Settings":
@@ -714,14 +836,67 @@ elif page == "Settings":
 
     # ── Paper Trading Config ──────────────────────────────────────────────────
     st.markdown("<h2>Paper Trading Config</h2>", unsafe_allow_html=True)
+
+    use_dynamic = st.toggle(
+        "Dynamic Position Sizing",
+        value=bool(cfg.get("use_dynamic_sizing", True)),
+        help="ON: each trade gets (available cash ÷ remaining slots). OFF: fixed ₹ per trade.",
+    )
+
+    from backend.broker.paper_broker import calc_capital_per_trade as _calc_cap
+    if use_dynamic:
+        _live_cap = _calc_cap({**cfg, "use_dynamic_sizing": True})
+        st.info(f"Dynamic: current capital per next trade ≈ **₹{_live_cap:,.0f}** "
+                f"(cash ÷ remaining slots). Updates automatically as positions open/close.")
+
     c1, c2 = st.columns(2)
-    new_capital  = c1.number_input("Capital per Trade (₹)", min_value=1000, max_value=500000,
-                                    value=int(cfg["capital_per_trade"]), step=5000)
+    new_capital  = c1.number_input("Capital per Trade (₹) — used when dynamic is OFF",
+                                    min_value=1000, max_value=500000,
+                                    value=int(cfg["capital_per_trade"]), step=5000,
+                                    disabled=use_dynamic)
     new_max_pos  = c2.number_input("Max Open Positions", min_value=1, max_value=20,
                                     value=int(cfg["max_open_positions"]), step=1)
+
+    _total_cap = cfg.get("starting_cash", 100000)
+    if use_dynamic and new_max_pos:
+        st.caption(f"For ₹{_total_cap:,.0f} capital with {new_max_pos} slots → "
+                   f"₹{_total_cap/new_max_pos:,.0f} per trade at start, rebalances as cash changes.")
+
     if st.button("Save Trading Config", type="primary"):
-        save_trader_config({**cfg, "capital_per_trade": new_capital, "max_open_positions": new_max_pos})
-        st.success(f"Saved — capital ₹{new_capital:,} / max {new_max_pos} positions")
+        save_trader_config({**cfg, "capital_per_trade": new_capital,
+                            "max_open_positions": new_max_pos,
+                            "use_dynamic_sizing": use_dynamic})
+        st.success(f"Saved — {'dynamic sizing' if use_dynamic else f'₹{new_capital:,} per trade'} / max {new_max_pos} positions")
+
+    st.divider()
+
+    # ── Add Funds (Top Up) ────────────────────────────────────────────────────
+    st.markdown("<h2>Add Funds</h2>", unsafe_allow_html=True)
+    from backend.broker.paper_broker import add_funds as _add_funds
+
+    _cur_portfolio = get_portfolio()
+    _cur_cash = _cur_portfolio.get("cash", 0.0)
+    _invested = sum(p["qty"] * p["avg_price"] for p in _cur_portfolio.get("positions", {}).values())
+    st.markdown(
+        f'<div style="background:rgba(59,130,246,0.08);border:1px solid #3b82f6;border-radius:8px;'
+        f'padding:10px 16px;color:#93c5fd;margin-bottom:12px">'
+        f'Current cash: <b>₹{_cur_cash:,.2f}</b> &nbsp;·&nbsp; Invested: <b>₹{_invested:,.2f}</b> &nbsp;·&nbsp; '
+        f'Total portfolio: <b>₹{_cur_cash + _invested:,.2f}</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    af1, af2 = st.columns([2, 1])
+    deposit_amt = af1.number_input("Amount to Add (₹)", min_value=1000, max_value=10000000,
+                                   value=50000, step=5000)
+    with af2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Add Funds", type="primary", use_container_width=True):
+            result = _add_funds(float(deposit_amt))
+            new_total = result["cash"] + _invested
+            cfg_new_starting = new_total  # update starting_cash so dynamic sizing uses full amount
+            save_trader_config({**cfg, "starting_cash": cfg_new_starting})
+            st.success(f"Added ₹{deposit_amt:,} — new cash balance: ₹{result['cash']:,.2f}  |  portfolio total: ₹{new_total:,.2f}")
+            st.rerun()
 
     st.divider()
 

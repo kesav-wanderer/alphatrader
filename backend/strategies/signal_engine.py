@@ -23,7 +23,7 @@ class StockDecision:
     ml_proba: Optional[float] = None
 
 
-def evaluate_signals(symbol: str, snap: dict, df_raw=None) -> StockDecision:
+def evaluate_signals(symbol: str, snap: dict, df_raw=None, include_news: bool = False) -> StockDecision:
     signals = []
     close = snap.get("close", 0)
 
@@ -124,6 +124,16 @@ def evaluate_signals(symbol: str, snap: dict, df_raw=None) -> StockDecision:
                         signals.append(Signal("ML_XGB", 0, f"XGBoost uncertain={ml_proba:.0%}", 0.5))
         except Exception as e:
             print(f"[signal_engine] ML: {e}")
+
+    # --- Signal 8: News sentiment (optional — skipped in batch scans) ---
+    if include_news:
+        try:
+            from backend.data.news_fetcher import get_news_sentiment_signal
+            ns = get_news_sentiment_signal(symbol)
+            if ns["value"] != 0:
+                signals.append(Signal("NEWS", ns["value"], ns["detail"], ns["confidence"]))
+        except Exception as e:
+            print(f"[signal_engine] news: {e}")
 
     # --- Decision ---
     bull_count = sum(1 for s in signals if s.value == +1)
