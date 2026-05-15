@@ -123,37 +123,38 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div id="_mkt_bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;
-         background:rgba(239,68,68,0.1);border:1px solid #ef4444;
-         border-radius:8px;margin-bottom:12px">
-      <span id="_mkt_dot" style="color:#ef4444;font-size:8px">●</span>
-      <span id="_mkt_lbl" style="color:#fca5a5;font-size:12px;font-weight:600">Market Closed</span>
-      <span id="_mkt_clk" style="color:#475569;font-size:11px;margin-left:auto">--:--:-- IST</span>
+    import streamlit.components.v1 as _components
+    _components.html("""
+    <style>
+      body{margin:0;padding:0;background:transparent}
+      #bar{display:flex;align-items:center;gap:8px;padding:8px 12px;
+           border-radius:8px;font-family:sans-serif;transition:all .3s}
+    </style>
+    <div id="bar">
+      <span id="dot" style="font-size:8px">●</span>
+      <span id="lbl" style="font-size:12px;font-weight:600"></span>
+      <span id="clk" style="font-size:11px;margin-left:auto;color:#475569"></span>
     </div>
     <script>
-    (function tick(){
-      var now  = new Date();
-      var ist  = new Date(now.getTime() + (5*60+30)*60000);
-      var h=ist.getUTCHours(), m=ist.getUTCMinutes(), s=ist.getUTCSeconds();
-      var pad  = function(n){return n.toString().padStart(2,'0');};
-      var dow  = ist.getUTCDay();  // 0=Sun,6=Sat
-      var mins = h*60+m;
-      var open = dow>=1 && dow<=5 && mins>=555 && mins<=930;
-      var bar  = document.getElementById('_mkt_bar');
-      var dot  = document.getElementById('_mkt_dot');
-      var lbl  = document.getElementById('_mkt_lbl');
-      var clk  = document.getElementById('_mkt_clk');
-      if(bar){ bar.style.background=open?'rgba(16,185,129,0.1)':'rgba(239,68,68,0.1)';
-               bar.style.borderColor=open?'#10b981':'#ef4444'; }
-      if(dot){ dot.style.color=open?'#10b981':'#ef4444'; }
-      if(lbl){ lbl.textContent=open?'Market Open':'Market Closed';
-               lbl.style.color=open?'#6ee7b7':'#fca5a5'; }
-      if(clk){ clk.textContent=pad(h)+':'+pad(m)+':'+pad(s)+' IST'; }
+    function tick(){
+      var now=new Date(), ist=new Date(now.getTime()+(5*60+30)*60000);
+      var h=ist.getUTCHours(),m=ist.getUTCMinutes(),s=ist.getUTCSeconds();
+      var p=function(n){return n.toString().padStart(2,'0');};
+      var dow=ist.getUTCDay(), mins=h*60+m;
+      var open=dow>=1&&dow<=5&&mins>=555&&mins<=930;
+      var bar=document.getElementById('bar');
+      bar.style.background=open?'rgba(16,185,129,0.1)':'rgba(239,68,68,0.1)';
+      bar.style.border='1px solid '+(open?'#10b981':'#ef4444');
+      document.getElementById('dot').style.color=open?'#10b981':'#ef4444';
+      var lbl=document.getElementById('lbl');
+      lbl.textContent=open?'Market Open':'Market Closed';
+      lbl.style.color=open?'#6ee7b7':'#fca5a5';
+      document.getElementById('clk').textContent=p(h)+':'+p(m)+':'+p(s)+' IST';
       setTimeout(tick,1000);
-    })();
+    }
+    tick();
     </script>
-    """, unsafe_allow_html=True)
+    """, height=46)
 
     if model_available():
         st.markdown('<div style="background:rgba(59,130,246,0.1);border:1px solid #3b82f6;border-radius:8px;padding:6px 12px;font-size:12px;color:#93c5fd;margin-bottom:12px">🤖 ML Model Active</div>', unsafe_allow_html=True)
