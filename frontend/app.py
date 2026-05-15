@@ -499,31 +499,58 @@ elif page == "Portfolio":
     portfolio = get_portfolio()
     positions = portfolio.get("positions", {})
 
+    ph_refresh = st.empty()
+    if ph_refresh.button("↺ Refresh Prices", use_container_width=False):
+        st.rerun()
+
     if positions:
-        live_pos = get_live_prices(list(positions.keys()))
-        current_prices = {s: d["price"] for s, d in live_pos.items() if d.get("price")}
+        # Fetch live prices — fall back to avg_price gracefully if any fail
+        try:
+            live_pos = get_live_prices(list(positions.keys()))
+            current_prices = {s: d["price"] for s, d in live_pos.items()
+                              if d.get("price") is not None}
+        except Exception:
+            current_prices = {}
+
         pnl = get_pnl(current_prices)
 
-        total_pnl_color = "#10b981" if pnl["total_pnl"] >= 0 else "#ef4444"
+        total_pnl       = pnl.get("total_pnl", 0) or 0
+        total_pnl_pct   = pnl.get("total_pnl_pct", 0) or 0
+        total_pnl_color = "#10b981" if total_pnl >= 0 else "#ef4444"
+        prices_live     = len(current_prices) == len(positions)
+
+        if not prices_live:
+            st.warning(f"Live prices unavailable for {len(positions)-len(current_prices)} stock(s) — showing entry price. Prices update after market opens (9:15 IST).")
+
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
             {stat_card("Cash",         f"₹{pnl['cash']:,.2f}",          "available", "#3b82f6")}
             {stat_card("Invested",     f"₹{pnl['total_invested']:,.2f}", "deployed",  "#8b5cf6")}
-            {stat_card("Current Value",f"₹{pnl['total_current']:,.2f}",  "live",      "#f59e0b")}
-            {stat_card("Total P&L",    f"₹{pnl['total_pnl']:,.2f}",
-                       f"{pnl['total_pnl_pct']:+.2f}%", total_pnl_color)}
+            {stat_card("Current Value",f"₹{pnl['total_current']:,.2f}",  "live" if prices_live else "entry price", "#f59e0b")}
+            {stat_card("Total P&L",    f"₹{total_pnl:,.2f}",
+                       f"{total_pnl_pct:+.2f}%", total_pnl_color)}
         </div>
         """, unsafe_allow_html=True)
 
-        rows = [{"Symbol": sym.replace(".NS",""), "Qty": p["qty"],
-                 "Avg": f"₹{p['avg_price']:.2f}", "Live": f"₹{p['current_price']:.2f}",
-                 "Invested": f"₹{p['invested']:,.2f}", "Value": f"₹{p['current_value']:,.2f}",
-                 "P&L": f"₹{p['pnl']:,.2f}", "P&L%": f"{p['pnl_pct']:+.2f}%"}
-                for sym, p in pnl["positions"].items()]
+        rows = []
+        for sym, p in pnl["positions"].items():
+            is_live = sym in current_prices
+            rows.append({
+                "Symbol":   sym.replace(".NS",""),
+                "Qty":      p["qty"],
+                "Entry ₹":  f"₹{p['avg_price']:.2f}",
+                "Live ₹":   f"₹{p['current_price']:.2f}" if is_live else "—",
+                "Invested": f"₹{p['invested']:,.2f}",
+                "Value":    f"₹{p['current_value']:,.2f}" if is_live else "—",
+                "P&L":      f"₹{p['pnl']:,.2f}" if is_live else "—",
+                "P&L%":     f"{p['pnl_pct']:+.2f}%" if is_live else "—",
+            })
+
         def _pnl_color(v):
             try:
-                return "color:#10b981;font-weight:600" if float(v.replace("₹","").replace(",","").replace("%",""))>=0 else "color:#ef4444;font-weight:600"
+                return "color:#10b981;font-weight:600" if float(v.replace("₹","").replace(",","").replace("%","")) >= 0 else "color:#ef4444;font-weight:600"
             except: return ""
+
         st.dataframe(pd.DataFrame(rows).style.map(_pnl_color, subset=["P&L","P&L%"]),
                      use_container_width=True, hide_index=True)
     else:

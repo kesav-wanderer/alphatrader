@@ -1,9 +1,24 @@
+import math
 import yfinance as yf
 import pandas as pd
 import os
 import hashlib
 from datetime import datetime, timedelta
 from config import DATA_DIR
+
+
+def _ist_now() -> datetime:
+    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+
+def _safe_round(val, digits=2):
+    """Return rounded float, or None if val is None/NaN/inf."""
+    try:
+        if val is None or math.isnan(val) or math.isinf(val):
+            return None
+        return round(float(val), digits)
+    except (TypeError, ValueError):
+        return None
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -49,20 +64,37 @@ def fetch_ohlcv(symbol: str, period: str = "1y", interval: str = "1d", use_cache
 
 
 def get_live_price(symbol: str) -> dict:
-    """Fast live price using yfinance fast_info — no cache."""
+    """Live price for symbol. Uses 1-min intraday bar (more reliable for NSE)
+    with fast_info as fallback. Always returns None for price if unavailable."""
     try:
         t = yf.Ticker(symbol)
+
+        # 1-min intraday gives the actual last traded price, not just close
+        hist = t.history(period="1d", interval="1m")
+        price = _safe_round(float(hist["Close"].iloc[-1])) if not hist.empty else None
+
         fi = t.fast_info
+        # fallback: fast_info last_price (may be stale / previous close)
+        if price is None:
+            price = _safe_round(fi.last_price)
+
+        prev_close = _safe_round(fi.previous_close)
+        day_high   = _safe_round(fi.day_high)
+        day_low    = _safe_round(fi.day_low)
+
+        change     = _safe_round(price - prev_close) if price and prev_close else None
+        change_pct = _safe_round(((price - prev_close) / prev_close) * 100) if price and prev_close else None
+
         return {
-            "symbol":        symbol,
-            "price":         round(fi.last_price, 2),
-            "prev_close":    round(fi.previous_close, 2),
-            "change":        round(fi.last_price - fi.previous_close, 2),
-            "change_pct":    round(((fi.last_price - fi.previous_close) / fi.previous_close) * 100, 2),
-            "day_high":      round(fi.day_high, 2),
-            "day_low":       round(fi.day_low, 2),
-            "volume":        int(fi.three_month_average_volume or 0),
-            "timestamp":     datetime.now().strftime("%H:%M:%S"),
+            "symbol":     symbol,
+            "price":      price,
+            "prev_close": prev_close,
+            "change":     change,
+            "change_pct": change_pct,
+            "day_high":   day_high,
+            "day_low":    day_low,
+            "volume":     int(fi.three_month_average_volume or 0),
+            "timestamp":  _ist_now().strftime("%H:%M:%S IST"),
         }
     except Exception as e:
         return {"symbol": symbol, "price": None, "error": str(e)}
