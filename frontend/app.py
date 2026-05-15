@@ -547,49 +547,41 @@ elif page == "Portfolio":
         # ── Positions table ───────────────────────────────────────────────────
         rows = []
         for sym, pos in positions.items():
-            entry   = pos["avg_price"]
-            qty     = pos["qty"]
+            entry   = float(pos["avg_price"])
+            qty     = int(pos["qty"])
             live_p  = current_prices.get(sym)
-            cur     = live_p if live_p else entry
+            cur     = float(live_p) if live_p else entry
             invested= qty * entry
             cur_val = qty * cur
-            pnl_amt = cur_val - invested
-            pnl_pct = (pnl_amt / invested * 100) if invested else 0
+            pnl_amt = round(cur_val - invested, 2)
+            pnl_pct = round((pnl_amt / invested * 100) if invested else 0, 2)
             sl      = pos.get("stop_loss")
             tgt     = pos.get("target")
             rows.append({
-                "Stock":    sym.replace(".NS",""),
-                "Qty":      qty,
-                "Entry ₹":  f"₹{entry:,.2f}",
-                "Current ₹":f"₹{cur:,.2f}" if live_p else f"₹{entry:,.2f} *",
-                "Invested": f"₹{invested:,.0f}",
-                "Value":    f"₹{cur_val:,.0f}",
-                "P&L ₹":    f"₹{pnl_amt:,.2f}",
-                "P&L %":    f"{pnl_pct:+.2f}%",
-                "SL":       f"₹{sl}" if sl else "—",
-                "Target":   f"₹{tgt}" if tgt else "—",
+                "Stock":      sym.replace(".NS",""),
+                "Qty":        qty,
+                "Entry":      round(entry, 2),
+                "Current":    round(cur, 2) if live_p else None,
+                "Invested":   round(invested, 2),
+                "Value":      round(cur_val, 2),
+                "P&L ₹":      pnl_amt,
+                "P&L %":      pnl_pct,
+                "SL":         sl,
+                "Target":     tgt,
             })
 
-        def _pnl_color(v):
-            try:
-                n = float(str(v).replace("₹","").replace(",","").replace("%","").replace("*","").strip())
-                return "color:#10b981;font-weight:600" if n >= 0 else "color:#ef4444;font-weight:600"
-            except: return ""
-
-        st.dataframe(
-            pd.DataFrame(rows).style.map(_pnl_color, subset=["P&L ₹","P&L %"]),
-            use_container_width=True, hide_index=True
-        )
+        df_pos = pd.DataFrame(rows)
+        st.dataframe(df_pos, use_container_width=True, hide_index=True)
         if not current_prices:
-            st.caption("* showing entry price — click 'Load Live Prices' to update")
+            st.caption("Current column shows entry price — click 'Load Live Prices' to update")
 
     # ── Trade History ─────────────────────────────────────────────────────────
     if trades:
         st.divider()
         st.markdown("<h2>Trade History</h2>", unsafe_allow_html=True)
-        df_trades = pd.DataFrame(trades[-30:]).iloc[::-1].reset_index(drop=True)
-        df_trades = df_trades[["timestamp","symbol","action","qty","price","cost","status","reason"] if "reason" in df_trades.columns else ["timestamp","symbol","action","qty","price","cost","status"]]
-        st.dataframe(df_trades, use_container_width=True, hide_index=True)
+        df_trades = pd.DataFrame(trades).iloc[::-1].reset_index(drop=True)
+        keep = [c for c in ["timestamp","symbol","action","qty","price","cost","status","reason"] if c in df_trades.columns]
+        st.dataframe(df_trades[keep], use_container_width=True, hide_index=True)
     else:
         st.caption("No trades yet.")
 
