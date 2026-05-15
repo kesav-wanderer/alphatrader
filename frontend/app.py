@@ -2,10 +2,16 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import time
+import threading
+from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+
+def _ist_now() -> datetime:
+    return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 from config import WATCHLIST
 from frontend.styles import DARK_CSS, action_badge, stat_card, ticker_card, signal_pill
@@ -24,23 +30,29 @@ st.set_page_config(
 )
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
-# ── Auto-scheduler (runs morning scan at 9:15 IST) ───────────────────────────
-def _start_scheduler():
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-        from apscheduler.triggers.cron import CronTrigger
-        from backend.broker.auto_trader import morning_scan, monitor_positions
+# ── Auto-scheduler — process-level singleton so multiple browser tabs don't ──
+# ── each start their own scheduler (causing duplicate monitor log entries)  ──
+_SCHEDULER_LOCK = threading.Lock()
+_SCHEDULER_STARTED = threading.Event()
 
-        if "scheduler" not in st.session_state:
+def _start_scheduler():
+    with _SCHEDULER_LOCK:
+        if _SCHEDULER_STARTED.is_set():
+            st.session_state["scheduler"] = True
+            return
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.triggers.cron import CronTrigger
+            from backend.broker.auto_trader import morning_scan, monitor_positions
+
             sched = BackgroundScheduler(timezone="Asia/Kolkata")
-            # Morning scan at 9:16 IST (1 min after open)
             sched.add_job(morning_scan,      CronTrigger(hour=9,  minute=16, day_of_week="mon-fri"), id="morning_scan")
-            # Monitor every 5 min during market hours
             sched.add_job(monitor_positions, CronTrigger(minute="*/5",       day_of_week="mon-fri"), id="monitor")
             sched.start()
-            st.session_state["scheduler"] = sched
-    except Exception:
-        pass   # apscheduler not installed — skip silently
+            _SCHEDULER_STARTED.set()
+            st.session_state["scheduler"] = True
+        except Exception:
+            pass
 
 _start_scheduler()
 
@@ -56,6 +68,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     market_open = _is_market_hours()
+    ist_time_str = _ist_now().strftime("%H:%M IST")
     st.markdown(
         f'<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;'
         f'background:{"rgba(16,185,129,0.1)" if market_open else "rgba(239,68,68,0.1)"};'
@@ -63,7 +76,7 @@ with st.sidebar:
         f'<span style="color:{"#10b981" if market_open else "#ef4444"};font-size:8px">●</span>'
         f'<span style="color:{"#6ee7b7" if market_open else "#fca5a5"};font-size:12px;font-weight:600">'
         f'{"Market Open" if market_open else "Market Closed"}</span>'
-        f'<span style="color:#475569;font-size:11px;margin-left:auto">{time.strftime("%H:%M")}</span>'
+        f'<span style="color:#475569;font-size:11px;margin-left:auto">{ist_time_str}</span>'
         f'</div>',
         unsafe_allow_html=True
     )
@@ -432,6 +445,39 @@ elif page == "Auto Trade":
             monitor_positions()
         st.success("Monitor done — exits placed if SL/target hit")
         st.rerun()
+
+    # ── Manual Force Buy ──────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("<h2>Manual Force Buy</h2>", unsafe_allow_html=True)
+    st.caption("Bypass scan — buy any stock immediately at live price (or override).")
+
+    fb1, fb2, fb3, fb4 = st.columns([3, 1, 1, 2])
+    fb_sym  = fb1.selectbox("Stock", WATCHLIST, format_func=lambda x: x.replace(".NS",""), label_visibility="collapsed", key="fb_sym")
+    fb_qty  = fb2.number_input("Qty", min_value=1, value=10, step=1, label_visibility="collapsed", key="fb_qty")
+
+    _fb_live = get_live_prices([fb_sym]).get(fb_sym, {})
+    _fb_default_price = float(_fb_live.get("price") or 0)
+    fb_price = fb3.number_input("Price ₹", min_value=0.05, value=max(_fb_default_price, 0.05), step=0.05, label_visibility="collapsed", key="fb_price")
+
+    with fb4:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button(f"⚡ Force BUY {fb_sym.replace('.NS','')}", type="primary", use_container_width=True):
+            from backend.strategies.signal_engine import evaluate_signals
+            from backend.data.indicators import add_indicators, get_indicator_snapshot
+            try:
+                _df = add_indicators(fetch_ohlcv(fb_sym, period="6mo", use_cache=True))
+                _snap = get_indicator_snapshot(_df)
+                _dec = evaluate_signals(fb_sym, _snap, df_raw=_df)
+                sl, tgt = _dec.stop_loss, _dec.target
+            except Exception:
+                sl, tgt = round(fb_price * 0.98, 2), round(fb_price * 1.06, 2)
+
+            trade = place_order(fb_sym, "BUY", fb_qty, fb_price, stop_loss=sl, target=tgt)
+            if trade["status"] == "EXECUTED":
+                st.success(f"✅ Bought {fb_qty} × {fb_sym.replace('.NS','')} @ ₹{fb_price:.2f}  |  SL ₹{sl}  →  Target ₹{tgt}")
+            else:
+                st.error(f"Rejected: {trade.get('reason')}")
+            st.rerun()
 
     st.divider()
     st.markdown("<h2>Activity Log</h2>", unsafe_allow_html=True)

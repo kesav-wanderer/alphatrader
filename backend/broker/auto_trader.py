@@ -21,8 +21,13 @@ MAX_OPEN_POSITIONS = 4      # never hold more than 4 stocks at once
 LOG_FILE = os.path.join(os.getenv("DATA_DIR", "./data/cache"), "auto_trader.log")
 
 
+def _ist_now() -> datetime:
+    """Always return current IST time (UTC+5:30), regardless of host timezone."""
+    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+
 def log(msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = _ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
     line = f"[{ts}] {msg}"
     print(line)
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -147,10 +152,9 @@ def run_loop(scan_interval_min: int = 5):
             time.sleep(300)
             continue
 
-        # Morning scan — run once between 9:15 and 9:25
-        ist_hour   = (now + timedelta(hours=5, minutes=30)).hour
-        ist_minute = (now + timedelta(hours=5, minutes=30)).minute
-        if ist_hour == 9 and 15 <= ist_minute <= 25 and not morning_done:
+        # Morning scan — run once between 9:15 and 9:25 IST
+        ist = _ist_now()
+        if ist.hour == 9 and 15 <= ist.minute <= 25 and not morning_done:
             morning_scan()
             morning_done = True
 
