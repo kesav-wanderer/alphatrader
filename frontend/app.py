@@ -13,6 +13,41 @@ from plotly.subplots import make_subplots
 def _ist_now() -> datetime:
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
+
+def _html_table(cols: list, rows: list, pnl_cols: set = None) -> str:
+    """Render a list-of-dicts as a styled HTML table. pnl_cols: column names to color green/red."""
+    pnl_cols = pnl_cols or set()
+    th = "".join(
+        f'<th style="padding:10px 14px;text-align:left;color:#64748b;font-size:11px;'
+        f'font-weight:700;text-transform:uppercase;border-bottom:1px solid #1e2a3a;white-space:nowrap">{c}</th>'
+        for c in cols
+    )
+    body = ""
+    for i, row in enumerate(rows):
+        bg = "rgba(255,255,255,0.02)" if i % 2 else "transparent"
+        cells = ""
+        for c in cols:
+            val = row.get(c, "")
+            style = "padding:10px 14px;color:#e2e8f0;font-size:13px;white-space:nowrap"
+            if c in pnl_cols:
+                try:
+                    n = float(str(val).replace("₹","").replace(",","").replace("%","").replace("+","").strip())
+                    color = "#10b981" if n >= 0 else "#ef4444"
+                    prefix = "+" if n > 0 else ""
+                    style = f"padding:10px 14px;color:{color};font-weight:700;font-size:13px"
+                    val = f"{prefix}{val}" if not str(val).startswith("+") else val
+                except Exception:
+                    pass
+            cells += f'<td style="{style}">{val}</td>'
+        body += f'<tr style="background:{bg}">{cells}</tr>'
+    return (
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1e2a3a">'
+        f'<table style="width:100%;border-collapse:collapse">'
+        f'<thead><tr style="background:#0d1117">{th}</tr></thead>'
+        f'<tbody>{body}</tbody>'
+        f'</table></div>'
+    )
+
 from config import WATCHLIST
 from frontend.styles import DARK_CSS, action_badge, stat_card, ticker_card, signal_pill
 from backend.data.fetcher import fetch_ohlcv, fetch_multiple, fetch_info, get_live_prices, _is_market_hours
@@ -145,6 +180,35 @@ if page == "Dashboard":
                             unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── My Holdings strip ─────────────────────────────────────────────────────
+    _pf = get_portfolio()
+    _pos = _pf.get("positions", {})
+    if _pos:
+        st.markdown("<h2>My Holdings</h2>", unsafe_allow_html=True)
+        h_rows = []
+        for _sym, _p in _pos.items():
+            _lp = live.get(_sym, {}).get("price")
+            _entry = float(_p["avg_price"])
+            _cur   = float(_lp) if _lp else _entry
+            _pct   = ((_cur - _entry) / _entry * 100) if _entry else 0
+            _sl    = _p.get("stop_loss")
+            _tgt   = _p.get("target")
+            h_rows.append({
+                "Stock":     _sym.replace(".NS",""),
+                "Qty":       _p["qty"],
+                "Entry ₹":   f"₹{_entry:,.2f}",
+                "Current ₹": f"₹{_cur:,.2f}" if _lp else f"₹{_entry:,.2f} *",
+                "P&L %":     f"{_pct:.2f}%",
+                "SL":        f"₹{_sl}" if _sl else "—",
+                "Target":    f"₹{_tgt}" if _tgt else "—",
+            })
+        st.markdown(
+            _html_table(["Stock","Qty","Entry ₹","Current ₹","P&L %","SL","Target"],
+                        h_rows, pnl_cols={"P&L %"}),
+            unsafe_allow_html=True
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
     with st.spinner("Running AI signal scan..."):
         raw_data = fetch_multiple(WATCHLIST, period="1y")
@@ -554,7 +618,7 @@ elif page == "Portfolio":
         </div>
         """, unsafe_allow_html=True)
 
-        rows = []
+        pos_rows = []
         for sym, pos in positions.items():
             entry   = float(pos["avg_price"])
             qty     = int(pos["qty"])
@@ -562,31 +626,49 @@ elif page == "Portfolio":
             cur     = float(live_p) if live_p else entry
             invested= qty * entry
             cur_val = qty * cur
-            pnl_amt = round(cur_val - invested, 2)
-            pnl_pct = round((pnl_amt / invested * 100) if invested else 0, 2)
-            rows.append({
-                "Stock":    sym.replace(".NS",""),
-                "Qty":      qty,
-                "Entry ₹":  round(entry, 2),
-                "Current ₹":round(cur, 2),
-                "Invested": round(invested, 2),
-                "Value ₹":  round(cur_val, 2),
-                "P&L ₹":    pnl_amt,
-                "P&L %":    pnl_pct,
-                "SL":       pos.get("stop_loss"),
-                "Target":   pos.get("target"),
+            pnl_amt = cur_val - invested
+            pnl_pct = (pnl_amt / invested * 100) if invested else 0
+            sl      = pos.get("stop_loss")
+            tgt     = pos.get("target")
+            live_tag = "" if live_p else " *"
+            pos_rows.append({
+                "Stock":     sym.replace(".NS",""),
+                "Qty":       qty,
+                "Entry ₹":   f"₹{entry:,.2f}",
+                "Current ₹": f"₹{cur:,.2f}{live_tag}",
+                "Invested":  f"₹{invested:,.0f}",
+                "Value ₹":   f"₹{cur_val:,.0f}",
+                "P&L ₹":     f"₹{pnl_amt:,.2f}",
+                "P&L %":     f"{pnl_pct:.2f}%",
+                "SL":        f"₹{sl}" if sl else "—",
+                "Target":    f"₹{tgt}" if tgt else "—",
             })
 
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        pos_cols = ["Stock","Qty","Entry ₹","Current ₹","Invested","Value ₹","P&L ₹","P&L %","SL","Target"]
+        st.markdown(_html_table(pos_cols, pos_rows, pnl_cols={"P&L ₹","P&L %"}), unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("↺ Refresh Prices"):
             st.rerun()
+        if not current_prices:
+            st.caption("* live price unavailable — showing entry price")
 
     if trades:
         st.divider()
         st.markdown("<h2>Trade History</h2>", unsafe_allow_html=True)
-        df_t = pd.DataFrame(trades).iloc[::-1].reset_index(drop=True)
-        keep = [c for c in ["timestamp","symbol","action","qty","price","cost","status","reason"] if c in df_t.columns]
-        st.dataframe(df_t[keep], use_container_width=True, hide_index=True)
+        trade_rows = []
+        for t in reversed(trades):
+            trade_rows.append({
+                "Time":    t.get("timestamp","")[:19].replace("T"," "),
+                "Symbol":  str(t.get("symbol","")).replace(".NS",""),
+                "Action":  t.get("action",""),
+                "Qty":     t.get("qty",""),
+                "Price ₹": f"₹{t.get('price',0):,.2f}",
+                "Cost ₹":  f"₹{t.get('cost',0):,.2f}",
+                "Status":  t.get("status",""),
+                "Note":    t.get("reason","") or "",
+            })
+        t_cols = ["Time","Symbol","Action","Qty","Price ₹","Cost ₹","Status","Note"]
+        st.markdown(_html_table(t_cols, trade_rows), unsafe_allow_html=True)
     else:
         st.caption("No trades yet.")
 
