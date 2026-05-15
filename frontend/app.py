@@ -498,69 +498,100 @@ elif page == "Portfolio":
 
     portfolio = get_portfolio()
     positions = portfolio.get("positions", {})
+    trades    = portfolio.get("trades", [])
+    cash      = portfolio.get("cash", 100000.0)
 
-    ph_refresh = st.empty()
-    if ph_refresh.button("↺ Refresh Prices", use_container_width=False):
-        st.rerun()
+    # ── Buttons ──────────────────────────────────────────────────────────────
+    btn_col1, btn_col2 = st.columns([1, 5])
+    load_live = btn_col1.button("↺ Load Live Prices", type="primary", use_container_width=True)
 
-    if positions:
-        # Fetch live prices — fall back to avg_price gracefully if any fail
-        try:
-            live_pos = get_live_prices(list(positions.keys()))
-            current_prices = {s: d["price"] for s, d in live_pos.items()
-                              if d.get("price") is not None}
-        except Exception:
-            current_prices = {}
+    if not positions:
+        st.markdown('<div style="color:#475569;text-align:center;padding:48px 0;font-size:16px">No open positions.<br><span style="font-size:13px">Go to Auto Trade → Run Morning Scan, or Stock Analysis to place manually.</span></div>', unsafe_allow_html=True)
+        st.metric("Available Cash", f"₹{cash:,.2f}")
+    else:
+        # ── Step 1: always render positions from portfolio JSON (instant) ────
+        total_invested = sum(p["qty"] * p["avg_price"] for p in positions.values())
 
-        pnl = get_pnl(current_prices)
+        # ── Step 2: optionally fetch live prices when button is clicked ──────
+        current_prices = {}
+        price_status   = "entry prices shown"
+        if load_live or st.session_state.get("portfolio_live_loaded"):
+            st.session_state["portfolio_live_loaded"] = True
+            with st.spinner("Fetching live prices..."):
+                try:
+                    raw = get_live_prices(list(positions.keys()))
+                    current_prices = {s: d["price"] for s, d in raw.items()
+                                      if d.get("price") is not None}
+                    price_status = f"live prices — {len(current_prices)}/{len(positions)} stocks updated"
+                except Exception as ex:
+                    price_status = f"price fetch failed: {ex}"
 
-        total_pnl       = pnl.get("total_pnl", 0) or 0
-        total_pnl_pct   = pnl.get("total_pnl_pct", 0) or 0
-        total_pnl_color = "#10b981" if total_pnl >= 0 else "#ef4444"
-        prices_live     = len(current_prices) == len(positions)
-
-        if not prices_live:
-            st.warning(f"Live prices unavailable for {len(positions)-len(current_prices)} stock(s) — showing entry price. Prices update after market opens (9:15 IST).")
+        # ── Summary cards ─────────────────────────────────────────────────────
+        total_current = sum(
+            positions[s]["qty"] * (current_prices.get(s) or positions[s]["avg_price"])
+            for s in positions
+        )
+        total_pnl     = total_current - total_invested
+        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
+        pnl_color     = "#10b981" if total_pnl >= 0 else "#ef4444"
 
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-            {stat_card("Cash",         f"₹{pnl['cash']:,.2f}",          "available", "#3b82f6")}
-            {stat_card("Invested",     f"₹{pnl['total_invested']:,.2f}", "deployed",  "#8b5cf6")}
-            {stat_card("Current Value",f"₹{pnl['total_current']:,.2f}",  "live" if prices_live else "entry price", "#f59e0b")}
-            {stat_card("Total P&L",    f"₹{total_pnl:,.2f}",
-                       f"{total_pnl_pct:+.2f}%", total_pnl_color)}
+            {stat_card("Cash",          f"₹{cash:,.2f}",           "available",      "#3b82f6")}
+            {stat_card("Invested",      f"₹{total_invested:,.2f}", "deployed",        "#8b5cf6")}
+            {stat_card("Current Value", f"₹{total_current:,.2f}",  price_status,      "#f59e0b")}
+            {stat_card("Total P&L",     f"₹{total_pnl:,.2f}",      f"{total_pnl_pct:+.2f}%", pnl_color)}
         </div>
         """, unsafe_allow_html=True)
 
+        # ── Positions table ───────────────────────────────────────────────────
         rows = []
-        for sym, p in pnl["positions"].items():
-            is_live = sym in current_prices
+        for sym, pos in positions.items():
+            entry   = pos["avg_price"]
+            qty     = pos["qty"]
+            live_p  = current_prices.get(sym)
+            cur     = live_p if live_p else entry
+            invested= qty * entry
+            cur_val = qty * cur
+            pnl_amt = cur_val - invested
+            pnl_pct = (pnl_amt / invested * 100) if invested else 0
+            sl      = pos.get("stop_loss")
+            tgt     = pos.get("target")
             rows.append({
-                "Symbol":   sym.replace(".NS",""),
-                "Qty":      p["qty"],
-                "Entry ₹":  f"₹{p['avg_price']:.2f}",
-                "Live ₹":   f"₹{p['current_price']:.2f}" if is_live else "—",
-                "Invested": f"₹{p['invested']:,.2f}",
-                "Value":    f"₹{p['current_value']:,.2f}" if is_live else "—",
-                "P&L":      f"₹{p['pnl']:,.2f}" if is_live else "—",
-                "P&L%":     f"{p['pnl_pct']:+.2f}%" if is_live else "—",
+                "Stock":    sym.replace(".NS",""),
+                "Qty":      qty,
+                "Entry ₹":  f"₹{entry:,.2f}",
+                "Current ₹":f"₹{cur:,.2f}" if live_p else f"₹{entry:,.2f} *",
+                "Invested": f"₹{invested:,.0f}",
+                "Value":    f"₹{cur_val:,.0f}",
+                "P&L ₹":    f"₹{pnl_amt:,.2f}",
+                "P&L %":    f"{pnl_pct:+.2f}%",
+                "SL":       f"₹{sl}" if sl else "—",
+                "Target":   f"₹{tgt}" if tgt else "—",
             })
 
         def _pnl_color(v):
             try:
-                return "color:#10b981;font-weight:600" if float(v.replace("₹","").replace(",","").replace("%","")) >= 0 else "color:#ef4444;font-weight:600"
+                n = float(str(v).replace("₹","").replace(",","").replace("%","").replace("*","").strip())
+                return "color:#10b981;font-weight:600" if n >= 0 else "color:#ef4444;font-weight:600"
             except: return ""
 
-        st.dataframe(pd.DataFrame(rows).style.map(_pnl_color, subset=["P&L","P&L%"]),
-                     use_container_width=True, hide_index=True)
-    else:
-        st.markdown('<div style="color:#475569;text-align:center;padding:48px 0;font-size:16px">No open positions.<br><span style="font-size:13px">Go to Auto Trade → Run Morning Scan, or Stock Analysis to place manually.</span></div>', unsafe_allow_html=True)
-        st.metric("Available Cash", f"₹{portfolio.get('cash',100000):,.2f}")
+        st.dataframe(
+            pd.DataFrame(rows).style.map(_pnl_color, subset=["P&L ₹","P&L %"]),
+            use_container_width=True, hide_index=True
+        )
+        if not current_prices:
+            st.caption("* showing entry price — click 'Load Live Prices' to update")
 
-    trades = portfolio.get("trades", [])
+    # ── Trade History ─────────────────────────────────────────────────────────
     if trades:
+        st.divider()
         st.markdown("<h2>Trade History</h2>", unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame(trades[-30:]).iloc[::-1], use_container_width=True, hide_index=True)
+        df_trades = pd.DataFrame(trades[-30:]).iloc[::-1].reset_index(drop=True)
+        df_trades = df_trades[["timestamp","symbol","action","qty","price","cost","status","reason"] if "reason" in df_trades.columns else ["timestamp","symbol","action","qty","price","cost","status"]]
+        st.dataframe(df_trades, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No trades yet.")
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

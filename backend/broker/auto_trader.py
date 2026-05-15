@@ -126,9 +126,10 @@ def monitor_positions():
                 else:
                     log(f"  SELL FAILED {sym}: {trade.get('reason')}")
             else:
-                log(f"  HOLD {sym:<18} price=Rs{price:.2f}  "
-                    f"avg=Rs{avg:.2f}  pnl={pnl_pct:+.1f}%  "
-                    f"sl=Rs{sl}  target=Rs{target}")
+                sl_str  = f"Rs{sl}"     if sl     else "none"
+                tgt_str = f"Rs{target}" if target else "none"
+                log(f"  HOLD {sym:<18} entry=Rs{avg:.2f}  current=Rs{price:.2f}  "
+                    f"pnl={pnl_pct:+.1f}%  sl={sl_str}  target={tgt_str}")
 
         except Exception as e:
             log(f"  monitor error {sym}: {e}")
