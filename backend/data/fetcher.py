@@ -105,6 +105,36 @@ def get_live_prices(symbols: list) -> dict:
     return {sym: get_live_price(sym) for sym in symbols}
 
 
+def batch_live_prices(symbols: list) -> dict:
+    """Fetch current prices for multiple symbols in one yf.download call.
+    Returns {symbol: price_float} — missing symbols are omitted."""
+    import math as _math
+    if not symbols:
+        return {}
+    try:
+        data = yf.download(symbols, period="1d", interval="1m",
+                           progress=False, auto_adjust=True, threads=True)
+        if data.empty:
+            return {}
+        close = data["Close"]
+        prices = {}
+        if len(symbols) == 1:
+            val = float(close.iloc[-1]) if hasattr(close, "iloc") else float(close.iloc[-1, 0])
+            if not _math.isnan(val):
+                prices[symbols[0]] = round(val, 2)
+        else:
+            for sym in symbols:
+                try:
+                    val = float(close[sym].iloc[-1])
+                    if not _math.isnan(val):
+                        prices[sym] = round(val, 2)
+                except Exception:
+                    pass
+        return prices
+    except Exception:
+        return {}
+
+
 def fetch_multiple(symbols: list, period: str = "1y", interval: str = "1d") -> dict:
     result = {}
     for sym in symbols:

@@ -30,6 +30,27 @@ st.set_page_config(
 )
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
+# ── Login gate ────────────────────────────────────────────────────────────────
+_APP_PWD = os.getenv("APP_PASSWORD", "alpha123")
+
+if not st.session_state.get("authenticated"):
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"]{display:none}
+    .block-container{max-width:420px;margin:80px auto}
+    </style>""", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center;margin-bottom:32px'>⚡ AlphaTrader</h1>", unsafe_allow_html=True)
+    with st.form("login_form", clear_on_submit=True):
+        pwd = st.text_input("Password", type="password", placeholder="Enter password")
+        submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
+        if submitted:
+            if pwd == _APP_PWD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Wrong password")
+    st.stop()
+
 # ── Auto-scheduler — process-level singleton so multiple browser tabs don't ──
 # ── each start their own scheduler (causing duplicate monitor log entries)  ──
 _SCHEDULER_LOCK = threading.Lock()
@@ -494,6 +515,7 @@ elif page == "Auto Trade":
 
 # ── Portfolio ─────────────────────────────────────────────────────────────────
 elif page == "Portfolio":
+    from backend.data.fetcher import batch_live_prices
     st.markdown("<h1>Paper Portfolio</h1>", unsafe_allow_html=True)
 
     portfolio = get_portfolio()
@@ -501,50 +523,37 @@ elif page == "Portfolio":
     trades    = portfolio.get("trades", [])
     cash      = portfolio.get("cash", 100000.0)
 
-    # ── Buttons ──────────────────────────────────────────────────────────────
-    btn_col1, btn_col2 = st.columns([1, 5])
-    load_live = btn_col1.button("↺ Load Live Prices", type="primary", use_container_width=True)
-
     if not positions:
-        st.markdown('<div style="color:#475569;text-align:center;padding:48px 0;font-size:16px">No open positions.<br><span style="font-size:13px">Go to Auto Trade → Run Morning Scan, or Stock Analysis to place manually.</span></div>', unsafe_allow_html=True)
+        st.markdown('<div style="color:#475569;text-align:center;padding:48px 0;font-size:16px">No open positions.<br><span style="font-size:13px">Go to Auto Trade → Run Morning Scan, or use Force Buy.</span></div>', unsafe_allow_html=True)
         st.metric("Available Cash", f"₹{cash:,.2f}")
     else:
-        # ── Step 1: always render positions from portfolio JSON (instant) ────
-        total_invested = sum(p["qty"] * p["avg_price"] for p in positions.values())
+        syms = list(positions.keys())
+        with st.spinner("Loading live prices..."):
+            current_prices = batch_live_prices(syms)
 
-        # ── Step 2: optionally fetch live prices when button is clicked ──────
-        current_prices = {}
-        price_status   = "entry prices shown"
-        if load_live or st.session_state.get("portfolio_live_loaded"):
-            st.session_state["portfolio_live_loaded"] = True
-            with st.spinner("Fetching live prices..."):
-                try:
-                    raw = get_live_prices(list(positions.keys()))
-                    current_prices = {s: d["price"] for s, d in raw.items()
-                                      if d.get("price") is not None}
-                    price_status = f"live prices — {len(current_prices)}/{len(positions)} stocks updated"
-                except Exception as ex:
-                    price_status = f"price fetch failed: {ex}"
+        n_live = len(current_prices)
+        if n_live < len(syms):
+            st.warning(f"Live price unavailable for {len(syms)-n_live} stock(s) — showing entry price for those.")
 
-        # ── Summary cards ─────────────────────────────────────────────────────
-        total_current = sum(
-            positions[s]["qty"] * (current_prices.get(s) or positions[s]["avg_price"])
-            for s in positions
+        total_invested = sum(pos["qty"] * pos["avg_price"] for pos in positions.values())
+        total_current  = sum(
+            positions[s]["qty"] * (current_prices.get(s, positions[s]["avg_price"]))
+            for s in syms
         )
         total_pnl     = total_current - total_invested
         total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
         pnl_color     = "#10b981" if total_pnl >= 0 else "#ef4444"
+        price_label   = f"live ({n_live}/{len(syms)} stocks)" if n_live else "entry prices"
 
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-            {stat_card("Cash",          f"₹{cash:,.2f}",           "available",      "#3b82f6")}
-            {stat_card("Invested",      f"₹{total_invested:,.2f}", "deployed",        "#8b5cf6")}
-            {stat_card("Current Value", f"₹{total_current:,.2f}",  price_status,      "#f59e0b")}
+            {stat_card("Cash",          f"₹{cash:,.2f}",           "available",  "#3b82f6")}
+            {stat_card("Invested",      f"₹{total_invested:,.2f}", "deployed",   "#8b5cf6")}
+            {stat_card("Current Value", f"₹{total_current:,.2f}",  price_label,  "#f59e0b")}
             {stat_card("Total P&L",     f"₹{total_pnl:,.2f}",      f"{total_pnl_pct:+.2f}%", pnl_color)}
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Positions table ───────────────────────────────────────────────────
         rows = []
         for sym, pos in positions.items():
             entry   = float(pos["avg_price"])
@@ -555,48 +564,85 @@ elif page == "Portfolio":
             cur_val = qty * cur
             pnl_amt = round(cur_val - invested, 2)
             pnl_pct = round((pnl_amt / invested * 100) if invested else 0, 2)
-            sl      = pos.get("stop_loss")
-            tgt     = pos.get("target")
             rows.append({
-                "Stock":      sym.replace(".NS",""),
-                "Qty":        qty,
-                "Entry":      round(entry, 2),
-                "Current":    round(cur, 2) if live_p else None,
-                "Invested":   round(invested, 2),
-                "Value":      round(cur_val, 2),
-                "P&L ₹":      pnl_amt,
-                "P&L %":      pnl_pct,
-                "SL":         sl,
-                "Target":     tgt,
+                "Stock":    sym.replace(".NS",""),
+                "Qty":      qty,
+                "Entry ₹":  round(entry, 2),
+                "Current ₹":round(cur, 2),
+                "Invested": round(invested, 2),
+                "Value ₹":  round(cur_val, 2),
+                "P&L ₹":    pnl_amt,
+                "P&L %":    pnl_pct,
+                "SL":       pos.get("stop_loss"),
+                "Target":   pos.get("target"),
             })
 
-        df_pos = pd.DataFrame(rows)
-        st.dataframe(df_pos, use_container_width=True, hide_index=True)
-        if not current_prices:
-            st.caption("Current column shows entry price — click 'Load Live Prices' to update")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if st.button("↺ Refresh Prices"):
+            st.rerun()
 
-    # ── Trade History ─────────────────────────────────────────────────────────
     if trades:
         st.divider()
         st.markdown("<h2>Trade History</h2>", unsafe_allow_html=True)
-        df_trades = pd.DataFrame(trades).iloc[::-1].reset_index(drop=True)
-        keep = [c for c in ["timestamp","symbol","action","qty","price","cost","status","reason"] if c in df_trades.columns]
-        st.dataframe(df_trades[keep], use_container_width=True, hide_index=True)
+        df_t = pd.DataFrame(trades).iloc[::-1].reset_index(drop=True)
+        keep = [c for c in ["timestamp","symbol","action","qty","price","cost","status","reason"] if c in df_t.columns]
+        st.dataframe(df_t[keep], use_container_width=True, hide_index=True)
     else:
         st.caption("No trades yet.")
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 elif page == "Settings":
+    from backend.broker.paper_broker import load_trader_config, save_trader_config, reset_portfolio
+
     st.markdown("<h1>Settings</h1>", unsafe_allow_html=True)
 
+    cfg = load_trader_config()
+
+    # ── Paper Trading Config ──────────────────────────────────────────────────
+    st.markdown("<h2>Paper Trading Config</h2>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    new_capital  = c1.number_input("Capital per Trade (₹)", min_value=1000, max_value=500000,
+                                    value=int(cfg["capital_per_trade"]), step=5000)
+    new_max_pos  = c2.number_input("Max Open Positions", min_value=1, max_value=20,
+                                    value=int(cfg["max_open_positions"]), step=1)
+    if st.button("Save Trading Config", type="primary"):
+        save_trader_config({**cfg, "capital_per_trade": new_capital, "max_open_positions": new_max_pos})
+        st.success(f"Saved — capital ₹{new_capital:,} / max {new_max_pos} positions")
+
+    st.divider()
+
+    # ── Reset Portfolio ───────────────────────────────────────────────────────
+    st.markdown("<h2>Reset Portfolio</h2>", unsafe_allow_html=True)
+    st.warning("This wipes all positions and trade history. Use when starting a new test run.")
+    r1, r2 = st.columns(2)
+    reset_cash = r1.number_input("Starting Cash (₹)", min_value=10000, max_value=10000000,
+                                  value=int(cfg.get("starting_cash", 100000)), step=10000)
+    with r2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Reset Portfolio", type="secondary", use_container_width=True):
+            save_trader_config({**cfg, "starting_cash": reset_cash})
+            reset_portfolio(starting_cash=float(reset_cash))
+            st.success(f"Portfolio reset — starting cash ₹{reset_cash:,}")
+            st.rerun()
+
+    st.divider()
+
+    # ── App Password ──────────────────────────────────────────────────────────
+    st.markdown("<h2>App Password</h2>", unsafe_allow_html=True)
+    st.caption("Set APP_PASSWORD env var to change. Default is alpha123.")
+    if st.button("Logout"):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
+    st.divider()
+
+    # ── Kite Connect ──────────────────────────────────────────────────────────
     st.markdown("<h2>Kite Connect (Zerodha)</h2>", unsafe_allow_html=True)
     st.info("Only needed for live trading. Paper trade works without API keys.")
-
     api_key    = st.text_input("API Key",    type="password", placeholder="your_api_key")
     api_secret = st.text_input("API Secret", type="password", placeholder="your_api_secret")
-
-    if st.button("Save API Keys", type="primary"):
+    if st.button("Save API Keys"):
         env_path = os.path.join(os.path.dirname(__file__), "../.env")
         existing = {}
         if os.path.exists(env_path):
@@ -609,10 +655,3 @@ elif page == "Settings":
         with open(env_path, "w") as f:
             [f.write(f"{k}={v}\n") for k, v in existing.items()]
         st.success("Saved to .env")
-
-    st.divider()
-    st.markdown("<h2>Signal Engine Thresholds</h2>", unsafe_allow_html=True)
-    st.markdown(stat_card("Edit config.py",
-                           "MIN_SIGNALS_TO_BUY = 4",
-                           "STOP_LOSS_PCT=0.02 | TARGET_PCT=0.06 | RISK_PER_TRADE=0.02",
-                           "#3b82f6"), unsafe_allow_html=True)

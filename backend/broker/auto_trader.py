@@ -16,8 +16,12 @@ from backend.broker.paper_broker import get_portfolio, place_order, get_pnl
 from config import WATCHLIST, RISK_PER_TRADE_PCT
 
 
-CAPITAL_PER_TRADE = 25000   # ₹ per trade
-MAX_OPEN_POSITIONS = 4      # never hold more than 4 stocks at once
+def _cfg():
+    from backend.broker.paper_broker import load_trader_config
+    return load_trader_config()
+
+CAPITAL_PER_TRADE  = 25000  # default — overridden at runtime by _cfg()
+MAX_OPEN_POSITIONS = 4      # default — overridden at runtime by _cfg()
 LOG_FILE = os.path.join(os.getenv("DATA_DIR", "./data/cache"), "auto_trader.log")
 
 
@@ -37,15 +41,18 @@ def log(msg: str):
 
 def morning_scan():
     """Run at market open — scan watchlist, place BUY orders for top signals."""
+    cfg = _cfg()
+    capital_per_trade  = cfg["capital_per_trade"]
+    max_open_positions = cfg["max_open_positions"]
     log("=== Morning Scan Started ===")
-    portfolio  = get_portfolio()
-    open_pos   = len(portfolio.get("positions", {}))
+    portfolio = get_portfolio()
+    open_pos  = len(portfolio.get("positions", {}))
 
-    if open_pos >= MAX_OPEN_POSITIONS:
-        log(f"Max positions ({MAX_OPEN_POSITIONS}) already open. Skipping scan.")
+    if open_pos >= max_open_positions:
+        log(f"Max positions ({max_open_positions}) already open. Skipping scan.")
         return
 
-    slots = MAX_OPEN_POSITIONS - open_pos
+    slots = max_open_positions - open_pos
     candidates = []
 
     for sym in WATCHLIST:
@@ -72,7 +79,7 @@ def morning_scan():
         if not price:
             continue
 
-        qty = int(CAPITAL_PER_TRADE / price)
+        qty = int(capital_per_trade / price)
         if qty == 0:
             continue
 

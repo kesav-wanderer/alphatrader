@@ -105,3 +105,28 @@ def get_pnl(current_prices: dict) -> dict:
         "total_pnl": round(total_current - total_invested, 2),
         "total_pnl_pct": round(((total_current - total_invested) / total_invested) * 100, 2) if total_invested else 0,
     }
+
+
+CONFIG_FILE = os.path.join(DATA_DIR, "trader_config.json")
+_DEFAULT_CFG = {"capital_per_trade": 25000, "max_open_positions": 4, "starting_cash": 100000}
+
+
+def load_trader_config() -> dict:
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE) as f:
+                return {**_DEFAULT_CFG, **json.load(f)}
+        except Exception:
+            pass
+    return _DEFAULT_CFG.copy()
+
+
+def save_trader_config(cfg: dict):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump({**_DEFAULT_CFG, **cfg}, f, indent=2)
+
+
+def reset_portfolio(starting_cash: float = 100000.0):
+    """Wipe all positions and trades, restore cash to starting_cash."""
+    _save({"cash": round(starting_cash, 2), "positions": {}, "trades": []})
