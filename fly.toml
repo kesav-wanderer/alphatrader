@@ -8,6 +8,9 @@ primary_region = 'sin'
 
 [build]
 
+[processes]
+  web = "streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --server.enableCORS false"
+
 [env]
   DATA_DIR = '/data/cache'
   MODELS_DIR = '/app/models/saved'

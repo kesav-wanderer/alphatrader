@@ -73,6 +73,7 @@ if not st.session_state.get("authenticated"):
     <style>
     [data-testid="stSidebar"]{display:none}
     .block-container{max-width:420px;margin:80px auto}
+    [data-testid="InputInstructions"]{display:none}
     </style>""", unsafe_allow_html=True)
     st.markdown("<h1 style='text-align:center;margin-bottom:32px'>⚡ AlphaTrader</h1>", unsafe_allow_html=True)
     with st.form("login_form", clear_on_submit=True):
