@@ -48,7 +48,7 @@ def _html_table(cols: list, rows: list, pnl_cols: set = None) -> str:
         f'</table></div>'
     )
 
-from config import WATCHLIST
+from config import WATCHLIST, MIN_SIGNALS_TO_BUY
 from frontend.styles import DARK_CSS, action_badge, stat_card, ticker_card, signal_pill
 from backend.data.fetcher import fetch_ohlcv, fetch_multiple, fetch_info, get_live_prices, _is_market_hours
 from backend.data.indicators import add_indicators, get_indicator_snapshot
@@ -854,13 +854,20 @@ elif page == "Settings":
                                     min_value=1000, max_value=500000,
                                     value=int(cfg["capital_per_trade"]), step=5000,
                                     disabled=use_dynamic)
-    new_max_pos  = c2.number_input("Max Open Positions", min_value=1, max_value=20,
-                                    value=int(cfg["max_open_positions"]), step=1)
+    new_max_pos  = c2.number_input("Max Positions (ceiling)", min_value=1, max_value=20,
+                                    value=int(cfg["max_open_positions"]), step=1,
+                                    help="Hard ceiling only — AI buys fewer if signals aren't strong enough.")
 
-    _total_cap = cfg.get("starting_cash", 100000)
+    _cur_cash_cfg = _cur_portfolio.get("cash", 0.0) if "_cur_portfolio" in dir() else get_portfolio().get("cash", 0.0)
+    _open_now = len((_cur_portfolio if "_cur_portfolio" in dir() else get_portfolio()).get("positions", {}))
+    _free_now = max(new_max_pos - _open_now, 0)
     if use_dynamic and new_max_pos:
-        st.caption(f"For ₹{_total_cap:,.0f} capital with {new_max_pos} slots → "
-                   f"₹{_total_cap/new_max_pos:,.0f} per trade at start, rebalances as cash changes.")
+        _cap_est = _cur_cash_cfg / max(_free_now, 1) if _free_now > 0 else 0
+        st.caption(
+            f"Currently {_open_now} open, {_free_now} slot(s) free · "
+            f"≈ ₹{_cap_est:,.0f}/trade with available cash · "
+            f"AI only fills slots where signals qualify (score ≥ {MIN_SIGNALS_TO_BUY})"
+        )
 
     if st.button("Save Trading Config", type="primary"):
         save_trader_config({**cfg, "capital_per_trade": new_capital,
@@ -885,17 +892,32 @@ elif page == "Settings":
         f'</div>',
         unsafe_allow_html=True,
     )
+    _open_pos   = len(_cur_portfolio.get("positions", {}))
+    _max_pos    = int(cfg.get("max_open_positions", 10))
+    _free_slots = max(_max_pos - _open_pos, 0)
+
     af1, af2 = st.columns([2, 1])
     deposit_amt = af1.number_input("Amount to Add (₹)", min_value=1000, max_value=10000000,
                                    value=50000, step=5000)
+    if _free_slots > 0:
+        af1.caption(f"{_free_slots} slot(s) free (max {_max_pos}) — scan will run automatically after deposit.")
+    else:
+        af1.caption(f"All {_max_pos} slots occupied. Increase Max Positions above to allow more trades.")
+
     with af2:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Add Funds", type="primary", use_container_width=True):
+        if st.button("Add Funds & Scan", type="primary", use_container_width=True):
             result = _add_funds(float(deposit_amt))
             new_total = result["cash"] + _invested
-            cfg_new_starting = new_total  # update starting_cash so dynamic sizing uses full amount
-            save_trader_config({**cfg, "starting_cash": cfg_new_starting})
-            st.success(f"Added ₹{deposit_amt:,} — new cash balance: ₹{result['cash']:,.2f}  |  portfolio total: ₹{new_total:,.2f}")
+            save_trader_config({**cfg, "starting_cash": new_total})
+            st.success(f"Added ₹{deposit_amt:,} — cash: ₹{result['cash']:,.2f}  |  total: ₹{new_total:,.2f}")
+            if _free_slots > 0:
+                from backend.broker.auto_trader import morning_scan as _scan
+                with st.spinner(f"Scanning for opportunities in {_free_slots} free slot(s)..."):
+                    _scan(label="Post-Deposit Scan")
+                st.info("Scan complete — check Portfolio for new positions.")
+            else:
+                st.warning(f"No free slots (all {_max_pos} filled). Increase Max Positions in config above to invest the new funds.")
             st.rerun()
 
     st.divider()

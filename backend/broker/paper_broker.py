@@ -110,7 +110,7 @@ def get_pnl(current_prices: dict) -> dict:
 CONFIG_FILE = os.path.join(DATA_DIR, "trader_config.json")
 _DEFAULT_CFG = {
     "capital_per_trade": 25000,
-    "max_open_positions": 4,
+    "max_open_positions": 10,     # ceiling — AI buys fewer when signals don't qualify
     "starting_cash": 100000,
     "use_dynamic_sizing": True,   # divides available cash equally across open slots
 }

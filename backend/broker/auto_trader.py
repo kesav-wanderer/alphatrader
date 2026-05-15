@@ -40,20 +40,31 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def morning_scan():
+MIN_CAPITAL_PER_SLOT = 2000  # don't open a position if allocated capital is below this
+
+
+def morning_scan(label: str = "Morning Scan"):
     """Run at market open — scan watchlist, place BUY orders for top signals."""
     cfg = _cfg()
-    capital_per_trade  = cfg["capital_per_trade"]
     max_open_positions = cfg["max_open_positions"]
-    log("=== Morning Scan Started ===")
+    log(f"=== {label} Started ===")
     portfolio = get_portfolio()
     open_pos  = len(portfolio.get("positions", {}))
+    cash      = portfolio.get("cash", 0.0)
 
     if open_pos >= max_open_positions:
-        log(f"Max positions ({max_open_positions}) already open. Skipping scan.")
+        log(f"Ceiling reached ({open_pos}/{max_open_positions} positions). Skipping scan.")
         return
 
     slots = max_open_positions - open_pos
+
+    # Cap slots by how many the available cash can actually fund
+    cap_per_slot = calc_capital_per_trade(cfg)
+    if cap_per_slot < MIN_CAPITAL_PER_SLOT:
+        log(f"Cash too low for new positions (₹{cap_per_slot:.0f}/slot < ₹{MIN_CAPITAL_PER_SLOT} min). Skipping.")
+        return
+
+    log(f"  {open_pos}/{max_open_positions} positions open · {slots} slot(s) available · ₹{cap_per_slot:,.0f}/slot")
     candidates = []
 
     for sym in WATCHLIST:
