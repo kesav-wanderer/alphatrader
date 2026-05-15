@@ -239,28 +239,32 @@ if page == "Dashboard":
     ml_tag = "🤖 ML Active" if model_available() else "⚙️ Rule-Based"
     st.markdown(f"<h2>Top Picks &nbsp;<span style='font-size:13px;color:#475569'>{ml_tag}</span></h2>", unsafe_allow_html=True)
 
-    rows = []
+    pick_rows = []
     for d in decisions:
         snap = enriched.get(d.symbol, {})
         lp   = live.get(d.symbol, {})
-        rows.append({
-            "Symbol":     d.symbol.replace(".NS",""),
-            "Action":     d.action,
-            "Score":      d.score,
-            "Live Price": f"₹{lp.get('price', snap.get('close',0)):,.2f}" if lp.get("price") else f"₹{snap.get('close',0):.2f}",
-            "Change":     f"{lp.get('change_pct',0):+.2f}%" if lp.get("price") else "—",
-            "RSI":        f"{snap.get('rsi',0):.1f}" if snap.get("rsi") else "—",
-            "ML Prob":    f"{d.ml_proba:.0%}" if d.ml_proba is not None else "—",
-            "Target":     f"₹{d.target}" if d.target else "—",
-            "Stop Loss":  f"₹{d.stop_loss}" if d.stop_loss else "—",
+        chg  = lp.get("change_pct", 0) or 0
+        action_badge_html = (
+            '<span style="background:#052e16;color:#6ee7b7;padding:2px 8px;border-radius:4px;font-weight:700">BUY</span>'
+            if d.action == "BUY" else
+            '<span style="background:#450a0a;color:#fca5a5;padding:2px 8px;border-radius:4px;font-weight:700">SELL</span>'
+            if d.action == "SELL" else
+            '<span style="color:#475569">HOLD</span>'
+        )
+        pick_rows.append({
+            "Symbol":    d.symbol.replace(".NS",""),
+            "Action":    action_badge_html,
+            "Score":     d.score,
+            "Price":     f"₹{lp.get('price', snap.get('close',0)):,.2f}" if lp.get("price") else f"₹{snap.get('close',0):.2f}",
+            "Change":    f"{chg:+.2f}%",
+            "RSI":       f"{snap.get('rsi',0):.1f}" if snap.get("rsi") else "—",
+            "ML":        f"{d.ml_proba:.0%}" if d.ml_proba is not None else "—",
+            "Target":    f"₹{d.target}" if d.target else "—",
+            "Stop Loss": f"₹{d.stop_loss}" if d.stop_loss else "—",
         })
 
-    df_tbl = pd.DataFrame(rows)
-    def _color(val):
-        if val == "BUY":  return "background-color:#052e16;color:#6ee7b7;font-weight:700"
-        if val == "SELL": return "background-color:#450a0a;color:#fca5a5;font-weight:700"
-        return "color:#475569"
-    st.dataframe(df_tbl.style.map(_color, subset=["Action"]), use_container_width=True, hide_index=True)
+    pick_cols = ["Symbol","Action","Score","Price","Change","RSI","ML","Target","Stop Loss"]
+    st.markdown(_html_table(pick_cols, pick_rows, pnl_cols={"Change"}), unsafe_allow_html=True)
 
     if show_debug:
         st.markdown("<h2>Signal Debug</h2>", unsafe_allow_html=True)
@@ -415,15 +419,21 @@ elif page == "Scanner":
                 "🔴":       sum(1 for s in d.signals if s.value==-1),
             })
 
-        df_scan = pd.DataFrame(rows)
-        def _color(v):
-            if v=="BUY":  return "background-color:#052e16;color:#6ee7b7;font-weight:700"
-            if v=="SELL": return "background-color:#450a0a;color:#fca5a5;font-weight:700"
-            return "color:#475569"
-        st.dataframe(df_scan.style.map(_color, subset=["Action"]), use_container_width=True, hide_index=True)
+        scan_rows = []
+        n_buys = 0
+        for row in rows:
+            act = row["Action"]
+            if act == "BUY":   n_buys += 1
+            row["Action"] = (
+                '<span style="background:#052e16;color:#6ee7b7;padding:2px 8px;border-radius:4px;font-weight:700">BUY</span>'  if act=="BUY" else
+                '<span style="background:#450a0a;color:#fca5a5;padding:2px 8px;border-radius:4px;font-weight:700">SELL</span>' if act=="SELL" else
+                '<span style="color:#475569">HOLD</span>'
+            )
+            scan_rows.append(row)
+        scan_cols = ["Symbol","Action","Score","Price","Change","RSI","ML","Target","SL","🟢","🔴"]
+        st.markdown(_html_table(scan_cols, scan_rows, pnl_cols={"Change"}), unsafe_allow_html=True)
 
-        buys = df_scan[df_scan["Action"]=="BUY"]
-        if not buys.empty:
+        if n_buys > 0:
             st.markdown(f'<div style="background:rgba(16,185,129,0.1);border:1px solid #10b981;border-radius:8px;padding:12px 16px;color:#6ee7b7;font-weight:600">🎯 {len(buys)} BUY opportunities found</div>', unsafe_allow_html=True)
 
 
@@ -474,13 +484,14 @@ elif page == "Backtest":
         m4.metric("Avg Sharpe",    f"{avg_sharpe:.2f}", delta="Strong" if avg_sharpe>=1.5 else "Moderate")
 
         st.divider()
-        rows = [{"Symbol": r.symbol.replace(".NS",""), "Trades": r.total_trades,
-                 "Win %": f"{r.win_rate:.1f}%", "Avg Ret": f"{r.avg_return:+.2f}%",
-                 "P&L": f"₹{r.total_pnl:,.0f}", "Max DD": f"{r.max_drawdown:.1f}%",
-                 "Sharpe": f"{r.sharpe:.2f}",
-                 "Grade": "✅ Strong" if r.win_rate>=55 and r.total_pnl>0 else ("⚠️ Weak" if r.win_rate>=45 else "❌ Poor")}
-                for r in sorted(results, key=lambda x: x.total_pnl, reverse=True)]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        bt_rows = [{"Symbol": r.symbol.replace(".NS",""), "Trades": r.total_trades,
+                    "Win %": f"{r.win_rate:.1f}%", "Avg Ret": f"{r.avg_return:+.2f}%",
+                    "P&L": f"₹{r.total_pnl:,.0f}", "Max DD": f"{r.max_drawdown:.1f}%",
+                    "Sharpe": f"{r.sharpe:.2f}",
+                    "Grade": "Strong" if r.win_rate>=55 and r.total_pnl>0 else ("Weak" if r.win_rate>=45 else "Poor")}
+                   for r in sorted(results, key=lambda x: x.total_pnl, reverse=True)]
+        st.markdown(_html_table(["Symbol","Trades","Win %","Avg Ret","P&L","Max DD","Sharpe","Grade"],
+                                bt_rows, pnl_cols={"P&L","Avg Ret"}), unsafe_allow_html=True)
 
         best = sorted([r for r in results if r.win_rate>=55 and r.total_pnl>0 and r.total_trades>=3],
                       key=lambda x: x.total_pnl, reverse=True)[:5]
