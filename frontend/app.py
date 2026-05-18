@@ -1000,10 +1000,12 @@ elif page == "Settings":
     st.markdown("<h2>Custom Watchlist</h2>", unsafe_allow_html=True)
     st.caption("Add any NSE stock beyond the built-in 55. Custom stocks are scanned, traded, and shown everywhere.")
 
-    from backend.data.watchlist import get_custom_stocks, get_full_watchlist as _full_wl, add_stock as _add_stock, remove_stock as _remove_stock
+    from backend.data.watchlist import (get_custom_stocks, get_full_watchlist as _full_wl,
+                                         add_stock as _add_stock, remove_stock as _remove_stock,
+                                         search_stocks as _search_stocks)
 
     _custom = get_custom_stocks()
-    _base_count = len(WATCHLIST)
+    _base_count = len(_BASE_WATCHLIST)
     st.markdown(
         f'<div style="background:rgba(59,130,246,0.08);border:1px solid #1e2a3a;border-radius:8px;'
         f'padding:10px 16px;color:#94a3b8;margin-bottom:12px;font-size:13px">'
@@ -1014,25 +1016,46 @@ elif page == "Settings":
         unsafe_allow_html=True,
     )
 
-    wl_c1, wl_c2 = st.columns([3, 1])
-    new_sym = wl_c1.text_input("Stock symbol (e.g. TATACOMM or TATACOMM.NS)",
-                                placeholder="SYMBOL or SYMBOL.NS", label_visibility="collapsed",
-                                key="new_sym_input")
-    with wl_c2:
-        if st.button("Add Stock", type="primary", use_container_width=True):
-            if new_sym.strip():
-                ok, msg = _add_stock(new_sym.strip())
-                if ok:
-                    st.success(msg)
-                else:
-                    st.warning(msg)
-                st.rerun()
+    # Search row
+    srch1, srch2 = st.columns([4, 1])
+    query = srch1.text_input("Search any stock by name or symbol",
+                              placeholder="e.g. Tata Communications, ZOMATO, HDFC…",
+                              label_visibility="collapsed", key="wl_search_query")
+    with srch2:
+        do_search = st.button("Search", use_container_width=True, key="wl_search_btn")
+
+    if do_search and query.strip():
+        with st.spinner("Searching Yahoo Finance…"):
+            st.session_state["wl_search_results"] = _search_stocks(query.strip(), max_results=10)
+
+    results = st.session_state.get("wl_search_results", [])
+    if results:
+        st.markdown("<b style='color:#94a3b8;font-size:12px'>Results — click Add to add to your watchlist:</b>",
+                    unsafe_allow_html=True)
+        for r in results:
+            rc1, rc2, rc3 = st.columns([3, 1, 1])
+            rc1.markdown(
+                f"<span style='color:#e2e8f0;font-size:13px'>{r['name']}</span> "
+                f"<span style='color:#475569;font-size:11px'>&nbsp;{r['symbol']} · {r['exchange']}</span>",
+                unsafe_allow_html=True,
+            )
+            if r["already_added"]:
+                rc3.markdown("<span style='color:#10b981;font-size:12px'>✓ Added</span>", unsafe_allow_html=True)
+            else:
+                if rc3.button("Add", key=f"add_{r['symbol']}", use_container_width=True, type="primary"):
+                    ok, msg = _add_stock(r["symbol"])
+                    st.toast(msg)
+                    st.session_state.pop("wl_search_results", None)
+                    st.rerun()
+    elif do_search:
+        st.caption("No Indian exchange results found. Try a different name or symbol.")
 
     if _custom:
-        st.markdown("<b style='color:#94a3b8;font-size:13px'>Custom stocks:</b>", unsafe_allow_html=True)
+        st.divider()
+        st.markdown("<b style='color:#94a3b8;font-size:13px'>Your custom stocks:</b>", unsafe_allow_html=True)
         for csym in _custom:
-            cr1, cr2 = st.columns([4, 1])
-            cr1.markdown(f"<span style='color:#e2e8f0'>{csym.replace('.NS','')}</span> "
+            cr1, cr2 = st.columns([5, 1])
+            cr1.markdown(f"<span style='color:#e2e8f0'>{csym.replace('.NS','').replace('.BO','')}</span> "
                          f"<span style='color:#475569;font-size:11px'>{csym}</span>", unsafe_allow_html=True)
             with cr2:
                 if st.button("Remove", key=f"rm_{csym}", use_container_width=True):
@@ -1040,7 +1063,7 @@ elif page == "Settings":
                     st.toast(msg)
                     st.rerun()
     else:
-        st.caption("No custom stocks yet.")
+        st.caption("No custom stocks yet — search above to add one.")
 
     st.divider()
 
