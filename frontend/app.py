@@ -1016,38 +1016,53 @@ elif page == "Settings":
         unsafe_allow_html=True,
     )
 
-    # Search row
+    # Search row — auto-suggests as you type (≥2 chars) + manual Search button
     srch1, srch2 = st.columns([4, 1])
     query = srch1.text_input("Search any stock by name or symbol",
-                              placeholder="e.g. Tata Communications, ZOMATO, HDFC…",
+                              placeholder="e.g. VED, Vedanta, Tata, HDFC…",
                               label_visibility="collapsed", key="wl_search_query")
     with srch2:
         do_search = st.button("Search", use_container_width=True, key="wl_search_btn")
 
-    if do_search and query.strip():
-        with st.spinner("Searching Yahoo Finance…"):
-            st.session_state["wl_search_results"] = _search_stocks(query.strip(), max_results=10)
+    # Auto-search when query changes (≥2 chars) OR when Search button clicked
+    _last_q = st.session_state.get("_wl_last_query", "")
+    _trigger = (do_search and query.strip()) or (len(query.strip()) >= 2 and query.strip() != _last_q)
+    if _trigger:
+        st.session_state["_wl_last_query"] = query.strip()
+        with st.spinner(""):
+            st.session_state["wl_search_results"] = _search_stocks(query.strip(), max_results=12)
+    elif not query.strip():
+        # Clear results when input is cleared
+        st.session_state.pop("wl_search_results", None)
+        st.session_state.pop("_wl_last_query", None)
 
     results = st.session_state.get("wl_search_results", [])
     if results:
-        st.markdown("<b style='color:#94a3b8;font-size:12px'>Results — click Add to add to your watchlist:</b>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='color:#64748b;font-size:12px'>Showing {len(results)} results "
+            f"— symbol matches listed first:</span>",
+            unsafe_allow_html=True,
+        )
         for r in results:
-            rc1, rc2, rc3 = st.columns([3, 1, 1])
+            rc1, rc2 = st.columns([5, 1])
+            sym_short = r["symbol"].replace(".NS", "").replace(".BO", "")
+            suffix    = ".NS" if r["symbol"].endswith(".NS") else ".BO"
             rc1.markdown(
-                f"<span style='color:#e2e8f0;font-size:13px'>{r['name']}</span> "
-                f"<span style='color:#475569;font-size:11px'>&nbsp;{r['symbol']} · {r['exchange']}</span>",
+                f"<span style='color:#e2e8f0;font-weight:600'>{sym_short}</span>"
+                f"<span style='color:#475569;font-size:11px'>{suffix}</span>"
+                f"<span style='color:#64748b;font-size:12px'> · {r['name']} · {r['exchange']}</span>",
                 unsafe_allow_html=True,
             )
             if r["already_added"]:
-                rc3.markdown("<span style='color:#10b981;font-size:12px'>✓ Added</span>", unsafe_allow_html=True)
+                rc2.markdown("<span style='color:#10b981;font-size:12px'>✓ Added</span>", unsafe_allow_html=True)
             else:
-                if rc3.button("Add", key=f"add_{r['symbol']}", use_container_width=True, type="primary"):
+                if rc2.button("+ Add", key=f"add_{r['symbol']}", use_container_width=True, type="primary"):
                     ok, msg = _add_stock(r["symbol"])
                     st.toast(msg)
                     st.session_state.pop("wl_search_results", None)
+                    st.session_state.pop("_wl_last_query", None)
                     st.rerun()
-    elif do_search:
+    elif query.strip() and _last_q == query.strip():
         st.caption("No Indian exchange results found. Try a different name or symbol.")
 
     if _custom:
@@ -1103,19 +1118,27 @@ elif page == "Settings":
     _train_period = ml_c1.selectbox("Training data period", ["1y", "2y", "3y"],
                                      index=1, label_visibility="collapsed", key="train_period")
     _train_scope  = ml_c2.selectbox("Stocks to train on",
-                                     ["Full watchlist", "Base only", "Custom only"],
+                                     ["Full watchlist (recommended)", "Base only", "Custom only"],
                                      label_visibility="collapsed", key="train_scope")
+
+    if _train_scope != "Full watchlist (recommended)":
+        st.warning(
+            "⚠ Training on a subset **replaces** the existing model. "
+            "A model trained on fewer stocks is less accurate — "
+            "use **Full watchlist** to include both base and custom stocks.",
+            icon=None,
+        )
 
     with ml_c3:
         _is_running = _tstate.get("status") == "running"
         if st.button("Train Model" if not _is_running else "Training…",
                      type="primary", use_container_width=True, disabled=_is_running):
-            if _train_scope == "Full watchlist":
+            if "Full" in _train_scope:
                 _syms = _full_wl()
             elif _train_scope == "Base only":
-                _syms = list(WATCHLIST)
+                _syms = list(_BASE_WATCHLIST)
             else:
-                _syms = get_custom_stocks() or list(WATCHLIST)
+                _syms = get_custom_stocks() or list(_BASE_WATCHLIST)
 
             ok, msg = _start_training(symbols=_syms, period=_train_period)
             if ok:

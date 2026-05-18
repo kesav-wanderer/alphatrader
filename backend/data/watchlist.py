@@ -7,46 +7,76 @@ _NSE_EXCHANGES = {"NSE", "NSI", "NMS"}
 _BSE_EXCHANGES = {"BOM", "BSE"}
 
 
-def search_stocks(query: str, max_results: int = 10) -> list:
+def search_stocks(query: str, max_results: int = 12) -> list:
     """
     Search Yahoo Finance for stocks matching query.
-    Returns list of dicts: {symbol, name, exchange, already_added}.
-    Prioritises NSE results; falls back to all Indian exchanges.
+    Returns list sorted by relevance: exact symbol > symbol starts-with > name match.
+    NSE preferred over BSE for duplicate symbols.
     """
     if not query or len(query.strip()) < 2:
         return []
+
+    q_upper = query.strip().upper()
+
     try:
         import yfinance as yf
-        s = yf.Search(query.strip(), max_results=max_results * 2, news_count=0)
+        s = yf.Search(query.strip(), max_results=max_results * 3, news_count=0)
         quotes = s.quotes or []
     except Exception:
         return []
 
     full_wl = set(get_full_watchlist())
-    results = []
+    seen_base = set()   # deduplicate: keep NSE over BSE for same base symbol
+    candidates = []
+
     for q in quotes:
         exch = q.get("exchange", "")
         sym  = q.get("symbol", "")
         name = q.get("shortname") or q.get("longname") or sym
         if not sym:
             continue
-        # Only Indian exchanges; prefer NSE
+
         if exch in _NSE_EXCHANGES:
             display_sym = sym if sym.endswith(".NS") else sym + ".NS"
         elif exch in _BSE_EXCHANGES:
             display_sym = sym if sym.endswith(".BO") else sym + ".BO"
         else:
             continue
-        results.append({
+
+        # base symbol without suffix for dedup
+        base = display_sym.replace(".NS", "").replace(".BO", "")
+        if base in seen_base:
+            continue
+        seen_base.add(base)
+
+        # Relevance score — lower = higher priority
+        if base == q_upper:
+            rank = 0                          # exact symbol match
+        elif base.startswith(q_upper):
+            rank = 1                          # symbol starts with query
+        elif name.upper().startswith(q_upper):
+            rank = 2                          # company name starts with query
+        elif q_upper in base:
+            rank = 3                          # query anywhere in symbol
+        else:
+            rank = 4                          # name contains query
+
+        # NSE preferred within same rank
+        exch_order = 0 if exch in _NSE_EXCHANGES else 1
+
+        candidates.append({
             "symbol":        display_sym,
             "name":          name,
             "exchange":      exch,
             "already_added": display_sym in full_wl,
+            "_rank":         (rank, exch_order),
         })
-        if len(results) >= max_results:
-            break
 
-    return results
+    candidates.sort(key=lambda x: x["_rank"])
+    for c in candidates:
+        c.pop("_rank")
+
+    return candidates[:max_results]
 
 CUSTOM_WL_FILE = os.path.join(DATA_DIR, "custom_watchlist.json")
 
