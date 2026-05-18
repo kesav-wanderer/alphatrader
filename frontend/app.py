@@ -630,8 +630,24 @@ elif page == "Auto Trade":
     import os as _os
     if _os.path.exists(LOG_FILE):
         with open(LOG_FILE) as f:
-            lines = f.readlines()
-        st.code("".join(lines[-40:][::-1]), language=None)
+            raw_lines = [l.rstrip() for l in f.readlines() if l.strip()]
+
+        # Deduplicate: collapse consecutive identical lines into one with a count
+        deduped = []
+        for line in raw_lines:
+            # Strip timestamp prefix for comparison so same message = same line
+            msg = line[22:] if len(line) > 22 else line
+            if deduped and deduped[-1][0] == msg:
+                deduped[-1] = (msg, line, deduped[-1][2] + 1)
+            else:
+                deduped.append((msg, line, 1))
+
+        # Show last 60 deduplicated entries, newest first
+        display_lines = []
+        for msg, line, count in reversed(deduped[-60:]):
+            display_lines.append(f"{line}  ×{count}" if count > 1 else line)
+
+        st.code("\n".join(display_lines), language=None)
         if st.button("Clear Log"):
             open(LOG_FILE, "w").close(); st.rerun()
     else:

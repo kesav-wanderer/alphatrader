@@ -151,6 +151,9 @@ def _monitor_positions_inner():
     if not positions:
         return
 
+    syms = list(positions.keys())
+    log(f"--- monitor: checking {len(syms)} position(s): {', '.join(s.replace('.NS','') for s in syms)}")
+
     for sym, pos in list(positions.items()):
         try:
             live  = get_live_price(sym)
@@ -189,11 +192,7 @@ def _monitor_positions_inner():
                         pass
                 else:
                     log(f"  SELL FAILED {sym}: {trade.get('reason')}")
-            else:
-                sl_str  = f"Rs{sl}"     if sl     else "none"
-                tgt_str = f"Rs{target}" if target else "none"
-                log(f"  HOLD {sym:<18} entry=Rs{avg:.2f}  current=Rs{price:.2f}  "
-                    f"pnl={pnl_pct:+.1f}%  sl={sl_str}  target={tgt_str}")
+            # HOLD is a non-event — don't log it, keeps activity log clean
 
         except Exception as e:
             log(f"  monitor error {sym}: {e}")
