@@ -48,7 +48,10 @@ def _html_table(cols: list, rows: list, pnl_cols: set = None) -> str:
         f'</table></div>'
     )
 
-from config import WATCHLIST, MIN_SIGNALS_TO_BUY
+from config import MIN_SIGNALS_TO_BUY
+from config import WATCHLIST as _BASE_WATCHLIST
+from backend.data.watchlist import get_full_watchlist as _get_full_wl
+WATCHLIST = _get_full_wl()   # base + any custom stocks added via Settings
 from frontend.styles import DARK_CSS, action_badge, stat_card, ticker_card, signal_pill
 from backend.data.fetcher import fetch_ohlcv, fetch_multiple, fetch_info, get_live_prices, _is_market_hours
 from backend.data.indicators import add_indicators, get_indicator_snapshot
@@ -647,7 +650,16 @@ elif page == "Auto Trade":
         for msg, line, count in reversed(deduped[-60:]):
             display_lines.append(f"{line}  ×{count}" if count > 1 else line)
 
-        st.code("\n".join(display_lines), language=None)
+        log_html = "".join(
+            f'<div style="padding:2px 0;border-bottom:1px solid #1e2a3a;color:#94a3b8;font-size:12px;'
+            f'font-family:monospace;word-break:break-word;white-space:pre-wrap">{l}</div>'
+            for l in display_lines
+        )
+        st.markdown(
+            f'<div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:8px;'
+            f'padding:8px 12px;max-height:420px;overflow-y:auto">{log_html}</div>',
+            unsafe_allow_html=True,
+        )
         if st.button("Clear Log"):
             open(LOG_FILE, "w").close(); st.rerun()
     else:
@@ -981,3 +993,123 @@ elif page == "Settings":
         with open(env_path, "w") as f:
             [f.write(f"{k}={v}\n") for k, v in existing.items()]
         st.success("Saved to .env")
+
+    st.divider()
+
+    # ── Custom Watchlist ──────────────────────────────────────────────────────
+    st.markdown("<h2>Custom Watchlist</h2>", unsafe_allow_html=True)
+    st.caption("Add any NSE stock beyond the built-in 55. Custom stocks are scanned, traded, and shown everywhere.")
+
+    from backend.data.watchlist import get_custom_stocks, get_full_watchlist as _full_wl, add_stock as _add_stock, remove_stock as _remove_stock
+
+    _custom = get_custom_stocks()
+    _base_count = len(WATCHLIST)
+    st.markdown(
+        f'<div style="background:rgba(59,130,246,0.08);border:1px solid #1e2a3a;border-radius:8px;'
+        f'padding:10px 16px;color:#94a3b8;margin-bottom:12px;font-size:13px">'
+        f'Base watchlist: <b>{_base_count} stocks</b> &nbsp;·&nbsp; '
+        f'Custom added: <b>{len(_custom)} stocks</b> &nbsp;·&nbsp; '
+        f'Total: <b>{_base_count + len(_custom)} stocks</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    wl_c1, wl_c2 = st.columns([3, 1])
+    new_sym = wl_c1.text_input("Stock symbol (e.g. TATACOMM or TATACOMM.NS)",
+                                placeholder="SYMBOL or SYMBOL.NS", label_visibility="collapsed",
+                                key="new_sym_input")
+    with wl_c2:
+        if st.button("Add Stock", type="primary", use_container_width=True):
+            if new_sym.strip():
+                ok, msg = _add_stock(new_sym.strip())
+                if ok:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
+                st.rerun()
+
+    if _custom:
+        st.markdown("<b style='color:#94a3b8;font-size:13px'>Custom stocks:</b>", unsafe_allow_html=True)
+        for csym in _custom:
+            cr1, cr2 = st.columns([4, 1])
+            cr1.markdown(f"<span style='color:#e2e8f0'>{csym.replace('.NS','')}</span> "
+                         f"<span style='color:#475569;font-size:11px'>{csym}</span>", unsafe_allow_html=True)
+            with cr2:
+                if st.button("Remove", key=f"rm_{csym}", use_container_width=True):
+                    ok, msg = _remove_stock(csym)
+                    st.toast(msg)
+                    st.rerun()
+    else:
+        st.caption("No custom stocks yet.")
+
+    st.divider()
+
+    # ── ML Model Training ─────────────────────────────────────────────────────
+    st.markdown("<h2>ML Model Training</h2>", unsafe_allow_html=True)
+    st.caption("Train the XGBoost model on historical data. Runs in the background — page stays usable.")
+
+    from backend.models.train_runner import (
+        start_training as _start_training,
+        get_training_state as _train_state,
+        get_training_log as _train_log,
+        get_model_info as _model_info,
+    )
+
+    _minfo = _model_info()
+    _tstate = _train_state()
+
+    # Model status card
+    if _minfo["exists"]:
+        st.markdown(
+            f'<div style="background:rgba(16,185,129,0.08);border:1px solid #10b981;border-radius:8px;'
+            f'padding:10px 16px;color:#6ee7b7;margin-bottom:12px;font-size:13px">'
+            f'✅ Model active — trained <b>{_minfo["trained_at"]}</b> &nbsp;·&nbsp; {_minfo["size_kb"]} KB'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="background:rgba(245,158,11,0.08);border:1px solid #f59e0b;border-radius:8px;'
+            'padding:10px 16px;color:#fcd34d;margin-bottom:12px;font-size:13px">'
+            '⚠ No model trained yet — AI signals use technical indicators only until you train.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    ml_c1, ml_c2, ml_c3 = st.columns([2, 1, 1])
+    _train_period = ml_c1.selectbox("Training data period", ["1y", "2y", "3y"],
+                                     index=1, label_visibility="collapsed", key="train_period")
+    _train_scope  = ml_c2.selectbox("Stocks to train on",
+                                     ["Full watchlist", "Base only", "Custom only"],
+                                     label_visibility="collapsed", key="train_scope")
+
+    with ml_c3:
+        _is_running = _tstate.get("status") == "running"
+        if st.button("Train Model" if not _is_running else "Training…",
+                     type="primary", use_container_width=True, disabled=_is_running):
+            if _train_scope == "Full watchlist":
+                _syms = _full_wl()
+            elif _train_scope == "Base only":
+                _syms = list(WATCHLIST)
+            else:
+                _syms = get_custom_stocks() or list(WATCHLIST)
+
+            ok, msg = _start_training(symbols=_syms, period=_train_period)
+            if ok:
+                st.success(msg)
+            else:
+                st.warning(msg)
+            st.rerun()
+
+    if _tstate.get("status") == "running":
+        st.info(f"Training in progress… {_tstate.get('message', '')}")
+        st.button("Refresh log", on_click=st.rerun)
+    elif _tstate.get("status") == "done":
+        st.success(f"Last run: {_tstate.get('message', 'Done')}")
+    elif _tstate.get("status") == "error":
+        st.error(f"Last run failed: {_tstate.get('message', '')}")
+
+    _log_content = _train_log(last_n=60)
+    if _log_content:
+        with st.expander("Training log", expanded=(_tstate.get("status") == "running")):
+            st.code(_log_content, language=None)

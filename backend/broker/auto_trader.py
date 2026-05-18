@@ -15,7 +15,8 @@ from backend.data.indicators import add_indicators, get_indicator_snapshot
 from backend.strategies.signal_engine import evaluate_signals
 from backend.broker.paper_broker import get_portfolio, place_order, get_pnl, calc_capital_per_trade
 from backend.broker.decision_log import log_decision, update_outcome
-from config import WATCHLIST, RISK_PER_TRADE_PCT
+from backend.data.watchlist import get_full_watchlist
+from config import RISK_PER_TRADE_PCT
 
 
 def _cfg():
@@ -81,7 +82,7 @@ def _morning_scan_inner(label: str = "Morning Scan"):
     log(f"  {open_pos}/{max_open_positions} positions open · {slots} slot(s) available · ₹{cap_per_slot:,.0f}/slot")
     candidates = []
 
-    for sym in WATCHLIST:
+    for sym in get_full_watchlist():
         # Skip if already holding
         if sym in portfolio.get("positions", {}):
             continue
