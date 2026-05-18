@@ -88,7 +88,7 @@ def load_dataset(symbols: list, period: str = TRAIN_PERIOD) -> tuple:
     return X, y, combined
 
 
-def train(symbols: list = None):
+def train(symbols: list = None, period: str = TRAIN_PERIOD):
     try:
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import classification_report, roc_auc_score
@@ -99,8 +99,8 @@ def train(symbols: list = None):
         return
 
     symbols = symbols or WATCHLIST
-    print(f"Loading data for {len(symbols)} symbols...")
-    X, y, df_full = load_dataset(symbols)
+    print(f"Loading data for {len(symbols)} symbols  period={period}...")
+    X, y, df_full = load_dataset(symbols, period=period)
 
     # Time-aware split — last 20% as test (no shuffle, respects time order)
     split = int(len(X) * 0.8)
