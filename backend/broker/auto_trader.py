@@ -8,6 +8,7 @@ sys.path.insert(0, ".")
 
 import os
 import time
+import threading
 from datetime import datetime, timedelta
 from backend.data.fetcher import fetch_ohlcv, get_live_price, _is_market_hours
 from backend.data.indicators import add_indicators, get_indicator_snapshot
@@ -24,6 +25,9 @@ def _cfg():
 CAPITAL_PER_TRADE  = 25000  # default — overridden at runtime by _cfg()
 MAX_OPEN_POSITIONS = 4      # default — overridden at runtime by _cfg()
 LOG_FILE = os.path.join(os.getenv("DATA_DIR", "./data/cache"), "auto_trader.log")
+
+_MONITOR_LOCK = threading.Lock()  # prevents concurrent monitor runs causing duplicate sells
+_SCAN_LOCK    = threading.Lock()  # prevents concurrent morning scans
 
 
 def _ist_now() -> datetime:
@@ -45,6 +49,16 @@ MIN_CAPITAL_PER_SLOT = 2000  # don't open a position if allocated capital is bel
 
 def morning_scan(label: str = "Morning Scan"):
     """Run at market open — scan watchlist, place BUY orders for top signals."""
+    if not _SCAN_LOCK.acquire(blocking=False):
+        log(f"{label} already running — skipping duplicate call")
+        return
+    try:
+        _morning_scan_inner(label)
+    finally:
+        _SCAN_LOCK.release()
+
+
+def _morning_scan_inner(label: str = "Morning Scan"):
     cfg = _cfg()
     max_open_positions = cfg["max_open_positions"]
     log(f"=== {label} Started ===")
@@ -122,6 +136,16 @@ def morning_scan(label: str = "Morning Scan"):
 
 def monitor_positions():
     """Check all open positions against live prices. Exit on SL/target."""
+    if not _MONITOR_LOCK.acquire(blocking=False):
+        log("monitor_positions already running — skipping duplicate call")
+        return
+    try:
+        _monitor_positions_inner()
+    finally:
+        _MONITOR_LOCK.release()
+
+
+def _monitor_positions_inner():
     portfolio = get_portfolio()
     positions = portfolio.get("positions", {})
     if not positions:
@@ -149,6 +173,12 @@ def monitor_positions():
                 reason = f"Emergency exit pnl={pnl_pct:.1f}%"
 
             if reason:
+                # Re-read portfolio right before selling to avoid duplicate sells
+                # from concurrent monitor calls all seeing the same snapshot
+                live_portfolio = get_portfolio()
+                if sym not in live_portfolio.get("positions", {}):
+                    log(f"  SKIP {sym} — position already closed by concurrent call")
+                    continue
                 trade = place_order(sym, "SELL", qty, price)
                 if trade["status"] == "EXECUTED":
                     log(f"  SELL {sym:<18} qty={qty}  price=Rs{price:.2f}  "
