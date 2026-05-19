@@ -20,7 +20,7 @@ def search_stocks(query: str, max_results: int = 12) -> list:
 
     try:
         import yfinance as yf
-        s = yf.Search(query.strip(), max_results=max_results * 3, news_count=0)
+        s = yf.Search(query.strip(), max_results=max_results * 5, news_count=0)
         quotes = s.quotes or []
     except Exception:
         return []
@@ -30,6 +30,10 @@ def search_stocks(query: str, max_results: int = 12) -> list:
     candidates = []
 
     for q in quotes:
+        # Only equities — skip mutual funds, ETFs, indices, currencies
+        if q.get("quoteType", "").upper() != "EQUITY":
+            continue
+
         exch = q.get("exchange", "")
         sym  = q.get("symbol", "")
         name = q.get("shortname") or q.get("longname") or sym
